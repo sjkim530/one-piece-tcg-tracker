@@ -77,6 +77,7 @@
     setRates: load(KEY.setRates, {}),  // setId   -> { perBox, packsPerBox }
     prefs:  load(KEY.prefs, { friction: 100, advanced: false }),
     ripSet: null, ripCard: null, ripSearch: '', ripRarity: 'all', ripColor: 'all',
+    gridLimit: 150,                 // raised by the "show all" control
     sigSearch: '', sigRarity: 'all', sigColor: 'all',
     rateScope: null,                 // which scope the pull-rate editor is on
     sigAutoScanned: false,
@@ -740,7 +741,20 @@
     grid.setAttribute('role', 'listbox');
     grid.setAttribute('aria-label', 'Cards' + (searching ? ' matching your search' : ' in this set'));
 
-    grid.innerHTML = opts.slice(0, 150).map(e => {
+    /* The cap used to be a bare slice(0, 150) with nothing said about it.
+
+       Cards are sorted by price descending, so the cull always fell on the
+       CHEAPEST — and an unpriced card sorts as $0. That is exactly backwards
+       for a chase: OP-13's Red Super Alternate Art Luffy and Ace have no
+       market price yet because they barely trade, so they sorted last and were
+       cut, while the app cheerfully said "177 cards". Across the catalogue
+       2,951 cards were unreachable this way, 2,322 of them promos.
+
+       Still capped, because PROMO is 2,472 tiles and rendering every image at
+       once is slow — but the count is now honest and the rest is one click. */
+    const limit = S.gridLimit;
+    const shown = Math.min(opts.length, limit);
+    grid.innerHTML = opts.slice(0, limit).map(e => {
       const fl = artFlag(e.card);
       const selected = e.key === S.ripCard;
       const from = e.fromSet
@@ -763,6 +777,16 @@
         <div class="pn">${searching ? esc(setShort(e.fromSet)) + ' · ' : ''}${esc(e.card.card_set_id)}</div>
       </div>`;
     }).join('') || `<div class="small muted">No cards match.</div>`;
+
+    const more = $('#rip-more');
+    if (more) {
+      more.innerHTML = opts.length > shown
+        ? `<button class="btn ghost small" id="rip-showall">
+             Showing ${shown} of ${opts.length} — show the rest</button>`
+        : '';
+      const b = $('#rip-showall');
+      if (b) b.addEventListener('click', () => { S.gridLimit = Infinity; renderRip(); });
+    }
 
     // Nothing selected yet (an empty filter, say) still needs a way in.
     if (!grid.querySelector('.pick[tabindex="0"]')) {
@@ -2580,13 +2604,13 @@
     $$('#tabs button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 
     on('#rip-set', 'change', e => {
-      S.ripSet = e.target.value; S.ripCard = null; renderRip();
+      S.ripSet = e.target.value; S.ripCard = null; S.gridLimit = 150; renderRip();
     });
     on('#rip-rarity', 'change', e => {
-      S.ripRarity = e.target.value; S.ripCard = null; renderRip();
+      S.ripRarity = e.target.value; S.ripCard = null; S.gridLimit = 150; renderRip();
     });
     on('#rip-color', 'change', e => {
-      S.ripColor = e.target.value; S.ripCard = null; renderRip();
+      S.ripColor = e.target.value; S.ripCard = null; S.gridLimit = 150; renderRip();
     });
     // Debounced: each keystroke re-picks the top match, which is a different
     // card and therefore a different history lookup. No point chasing every
@@ -2596,7 +2620,7 @@
       const v = e.target.value;
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => {
-        S.ripSearch = v; S.ripCard = null; renderRip();
+        S.ripSearch = v; S.ripCard = null; S.gridLimit = 150; renderRip();
       }, 180);
     });
     // ---- collection
