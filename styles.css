@@ -228,6 +228,12 @@ nav.tabs button[aria-selected="true"] { background: var(--sea); color: #04121d; 
 .st-SOFT    { background: #302315; color: #f0b25c; border: 1px solid #6b4c1e; }
 .st-LOOSE   { background: #331717; color: #ff8080; border: 1px solid #6b2a2a; }
 
+/* A card TCGplayer has no sold average for. Shown as "no price" rather than
+   $0.00, because those are opposite claims: one says nobody has traded it
+   recently, the other says it is worthless — and it is usually the rarest
+   cards in a set that carry no price. */
+.pp.nopx { color: var(--ink-3); font-style: italic; font-weight: 600; }
+
 /* A real <button> carrying the row's primary action.
 
    Clickable <tr> elements were mouse-only: no tabindex, no role, no keyboard

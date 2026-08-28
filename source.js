@@ -301,22 +301,57 @@ window.SRC = (function () {
     const text = await (await get('/g/' + set.group)).text();
     const rows = parseCsv(text);
 
-    const cards = {}, products = {};
+    /* One productId, two printings.
+
+       90 products across the catalogue ship as a Normal AND a Foil row under
+       the SAME productId, and both carry a price — often wildly different:
+       Boa Hancock (Sealed Battle 2024 Vol. 2) is $9.27 Normal against $176.58
+       Foil, a 19x spread. This used to keep whichever row appeared first in
+       the CSV, so the price shown was decided by file order.
+
+       Now it is deterministic: Normal wins, because that is the printing
+       people mean by "the card" and the one most likely to be in a binder.
+       The other printing is not discarded — it rides along as `alt` so the
+       card page can show both rather than quietly picking one. */
+    const pick = {}, products = {};
     for (const row of rows) {
       if (!row.productId) continue;
-      const bucket = isCard(row) ? cards : products;
-      const prev = bucket[row.productId];
-      const priced = num(row.marketPrice) != null;
+      const isC = isCard(row);
+      const key = row.productId;
+      const store = isC ? pick : products;
+      const prev = store[key];
 
-      if (!prev) {
-        bucket[row.productId] = row;
-      } else if (priced && num(prev.marketPrice) == null) {
-        bucket[row.productId] = row;              // upgrade unpriced -> priced
-      }
+      if (!prev) { store[key] = row; continue; }
+
+      const prevPriced = num(prev.marketPrice) != null;
+      const thisPriced = num(row.marketPrice) != null;
+
+      if (thisPriced && !prevPriced) { store[key] = row; continue; }  // priced beats unpriced
+      if (!thisPriced) continue;
+
+      // Both priced: prefer Normal, deterministically.
+      const prevNormal = (prev.subTypeName || '') === 'Normal';
+      const thisNormal = (row.subTypeName || '') === 'Normal';
+      if (thisNormal && !prevNormal) store[key] = row;
+    }
+
+    // Attach the printing we did not choose, so nothing is silently dropped.
+    const alts = {};
+    for (const row of rows) {
+      if (!row.productId || !isCard(row)) continue;
+      const chosen = pick[row.productId];
+      if (!chosen || chosen === row) continue;
+      if (num(row.marketPrice) == null) continue;
+      alts[row.productId] = { printing: row.subTypeName || 'Other',
+                              market: num(row.marketPrice), low: num(row.lowPrice) };
     }
 
     return {
-      cards: Object.keys(cards).map(k => toCard(cards[k], set)),
+      cards: Object.keys(pick).map(k => {
+        const c = toCard(pick[k], set);
+        if (alts[k]) c.alt_printing = alts[k];
+        return c;
+      }),
       products: Object.keys(products).map(k => toProduct(products[k], set))
     };
   }

@@ -537,20 +537,47 @@
     if (meta && meta.kind && meta.kind !== 'booster') {
       const ck = 'browse|' + setId;
       if (S.indexCache[ck]) return S.indexCache[ck];
+      /* Same unpriced-card problem as buildSetIndex, minus the slots: promos
+         and deck cards have no pull slot to average over, so the proxy is the
+         average of priced cards sharing the same printed RARITY in this group.
+         An unpriced SEC then ranks with the other SECs instead of below every
+         common in the set. */
       const rows = (S.bySet[setId] || []).map(c => ({
         card: c, key: E.cardKey(c), price: priceOf(c),
         slot: null, variantLabel: E.classify(c).variantLabel || null
-      })).sort((a, b) => b.price - a.price);
+      }));
+      const byRarity = {};
+      for (const r of rows) {
+        if (!(r.price > 0)) continue;
+        const k = r.card.rarity || '?';
+        (byRarity[k] = byRarity[k] || []).push(r.price);
+      }
+      // Same fallback as buildSetIndex: a rarity where nothing is priced would
+      // otherwise average to zero and sink every card in it.
+      const allPriced = rows.filter(r => r.price > 0).map(r => r.price);
+      const groupAvg = allPriced.length
+        ? allPriced.reduce((x, y) => x + y, 0) / allPriced.length : 0;
+      const avgFor = k => {
+        const a = byRarity[k];
+        return a && a.length ? a.reduce((x, y) => x + y, 0) / a.length : groupAvg;
+      };
+      for (const r of rows) {
+        r.unpriced = !(r.price > 0);
+        r.sortPrice = r.unpriced ? avgFor(r.card.rarity || '?') : r.price;
+      }
+      rows.sort((a, b) => b.sortPrice - a.sortPrice);
       S.indexCache[ck] = rows;
       return rows;
     }
     const idx = indexFor(setId);
     // Booster sets: pullable cards first, then the excluded ones so a box
     // topper you own is still findable.
-    return idx.all.concat(idx.excluded.map(x => ({
-      card: x.card, key: E.cardKey(x.card), price: priceOf(x.card),
-      slot: null, variantLabel: x.reason || null
-    })));
+    return idx.all.concat(idx.excluded.map(x => {
+      const price = priceOf(x.card);
+      return { card: x.card, key: E.cardKey(x.card), price,
+               unpriced: !(price > 0), sortPrice: price,
+               slot: null, variantLabel: x.reason || null };
+    }));
   }
 
   /**
@@ -614,7 +641,10 @@
       rows = rows.filter(e => hasColor(e.card, col));
     }
 
-    rows.sort((a, b) => b.price - a.price);
+    // Sort on the same key the pools use, so an unpriced chase keeps its
+    // place instead of dropping to the bottom the moment a filter is applied.
+    rows.sort((a, b) => (b.sortPrice != null ? b.sortPrice : b.price)
+                      - (a.sortPrice != null ? a.sortPrice : a.price));
     return rows;
   }
 
@@ -762,7 +792,7 @@
                                    : ', from ' + setShort(e.fromSet))
         : '';
       const label = `${e.card.card_name}${e.variantLabel ? ', ' + e.variantLabel : ''}` +
-                    `, ${e.card.card_set_id}, ${E.money(e.price)}${from}` +
+                    `, ${e.card.card_set_id}, ${e.unpriced ? 'no market price yet' : E.money(e.price)}${from}` +
                     `${fl ? '. ' + artFlagText(fl) : ''}`;
       return `
       <div class="pick${selected ? ' sel' : ''}${fl ? ' badart' : ''}"
@@ -773,7 +803,8 @@
            data-key="${esc(e.key)}"
            data-set="${esc(e.fromSet || S.ripSet)}">
         ${cardArt(e.card)}
-        <div class="pmeta"><span class="pp">${E.money(e.price)}</span>${rarityChip(e.card)}</div>
+        <div class="pmeta"><span class="pp${e.unpriced ? ' nopx' : ''}">${
+          e.unpriced ? 'no price' : E.money(e.price)}</span>${rarityChip(e.card)}</div>
         <div class="pn">${searching ? esc(setShort(e.fromSet)) + ' · ' : ''}${esc(e.card.card_set_id)}</div>
       </div>`;
     }).join('') || `<div class="small muted">No cards match.</div>`;
@@ -1132,6 +1163,9 @@
               </div>
               <div class="small muted" style="margin-bottom:14px;line-height:1.5">
                 ${sig ? `Listing is <b>${E.pct(sig.ratio, 0)}</b> of market — <b>${esc(sig.state)}</b> supply. ` : ''}
+                ${card.alt_printing ? `<br><b>${esc(card.alt_printing.printing)} printing:</b> ` +
+                  `${E.money(card.alt_printing.market)}` +
+                  ` <span class="muted">— TCGplayer lists both under one product id; the figure above is the Normal printing.</span>` : ''}
                 <span title="Market price is TCGplayer's weighted average of recent completed sales. The listing is the cheapest copy for sale right now — no condition breakdown is published, so it is whatever the seller listed. The gap between them widens with price: at $500+ the median card is listed AT or above its sold average.">
                   Why these differ ⓘ</span>
               </div>
@@ -2109,7 +2143,8 @@
            title="${esc(e.card.card_name)}${n ? ' — in this binder, tap to remove' : elsewhere[e.key] ? ' — in another binder' : ''}">
         ${cardArt(e.card)}
         ${n > 1 ? `<span class="qtybadge">${n}</span>` : ''}
-        <div class="pmeta"><span class="pp">${E.money(e.price)}</span>${rarityChip(e.card)}</div>
+        <div class="pmeta"><span class="pp${e.unpriced ? ' nopx' : ''}">${
+          e.unpriced ? 'no price' : E.money(e.price)}</span>${rarityChip(e.card)}</div>
         <div class="pn">${esc(e.card.card_set_id)}</div>
       </div>`; }).join('') || `<div class="small muted">Nothing at that filter.</div>`;
 

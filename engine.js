@@ -170,25 +170,66 @@ const OQ_ENGINE = (function (D) {
       });
     }
 
+    /* Fallback for a slot where NOTHING is priced.
+
+       The per-slot average only works if at least one card in that slot has a
+       price. OP-17 has two SP cards printed at PR rarity and both are
+       unpriced, so their slot averaged to zero and they sank right back to the
+       bottom — the exact bug this is meant to fix, one level down. The
+       set-wide average of priced cards is a blunter guess but a far better one
+       than zero. */
+    const everyPriced = [];
+    for (const key of Object.keys(pools)) {
+      for (const e of pools[key]) if (e.price > 0) everyPriced.push(e.price);
+    }
+    const setAvg = everyPriced.length
+      ? everyPriced.reduce((a, b) => a + b, 0) / everyPriced.length : 0;
+
     const slots = {};
     const all = [];
     for (const key of Object.keys(pools)) {
       const entries = pools[key];
+
+      /* AN UNPRICED CARD IS NOT A CHEAP CARD.
+
+         Sorting on raw price put every card TCGplayer has no sold average for
+         at $0 — dead last. That is precisely backwards, because the cards
+         without a price are the ones too scarce to have traded: OP-17 has 11
+         SP cards and only 3 carry a price, so 8 of them sank to positions
+         164-176 of 177 and fell off the end of the grid. Same for OP-13's Red
+         Super Alternate Art Luffy and Ace.
+
+         So an unpriced card is ranked by what its SLOT is worth in this set
+         instead. We do not know what that Luffy sells for, but we know it is
+         a Super Alt Art, and Super Alt Arts here average four figures — that
+         is a far better guess than zero. `price` is untouched for display;
+         only the sort key changes, and `unpriced` lets the UI say so. */
+      const priced = entries.filter(e => e.price > 0);
+      const avgPriced = priced.length
+        ? priced.reduce((s, e) => s + e.price, 0) / priced.length : 0;
+      for (const e of entries) {
+        e.unpriced = !(e.price > 0);
+        e.sortPrice = e.unpriced ? (avgPriced || setAvg) : e.price;
+      }
+
       const total = entries.reduce((s, e) => s + e.price, 0);
-      entries.sort((a, b) => b.price - a.price);
+      entries.sort((a, b) => b.sortPrice - a.sortPrice);
       slots[key] = {
         key,
         entries,
         count: entries.length,
-        avgPrice: entries.length ? total / entries.length : 0,
-        maxPrice: entries.length ? entries[0].price : 0
+        // Averages stay based on REAL prices only — letting a proxy feed back
+        // into the average that produced it would drift the set's EV.
+        avgPrice: priced.length ? avgPriced : 0,
+        maxPrice: entries.length ? Math.max.apply(null, entries.map(e => e.price)) : 0,
+        unpricedCount: entries.length - priced.length
       };
       for (const e of entries) all.push(e);
     }
     // Flat, pre-sorted view of every pullable card in the set. Callers used to
     // rebuild this by walking every slot on every render — the Signals tab did
     // it across all 21 sets each time a filter changed.
-    all.sort((a, b) => b.price - a.price);
+    all.sort((a, b) => b.sortPrice - a.sortPrice);
     return { setId, slots, all, excluded, cards };
   }
 
