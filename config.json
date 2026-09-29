@@ -1,0 +1,44 @@
+{
+  "ntfy": {
+    "topic": "pb-op-ldhfttgw1r73laqbm9",
+    "server": "https://ntfy.sh",
+    "priority": 4
+  },
+
+  "sources": [
+    {
+      "name": "ONE PIECE TCG (Bandai Card Shop)",
+      "url": "https://p-bandai.com/us/series/onepiece-series?_f_shops=05-0004&_f_series=03-002",
+      "enabled": true
+    },
+    {
+      "name": "ONE PIECE CARD GAME (brand page)",
+      "url": "https://p-bandai.com/us/brand/onepiececardgame",
+      "enabled": false
+    },
+    {
+      "name": "ONE PIECE figures etc (non-TCG)",
+      "url": "https://p-bandai.com/us/series/onepiece-series",
+      "enabled": false
+    }
+  ],
+
+  "statuses": ["On", "Waiting"],
+
+  "match": {
+    "mode": "off",
+    "keywords": ["one piece", "one piece card game"],
+    "exclude": []
+  },
+
+  "alert_on_status_change": true,
+  "alert_on_restock": true,
+  "include_lottery": true,
+  "alert_new_when_unavailable": true,
+  "alert_cooldown_hours": 6,
+  "heartbeat_hours": 24,
+  "reminder_minutes": 60,
+  "timezone": "America/New_York",
+  "utc_offset_hours": -4,
+  "politeness_delay_seconds": 3
+}
