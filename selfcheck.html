@@ -46,8 +46,9 @@ const REQUIRED_IDS = [
   'rip-set','rip-search','rip-rarity','rip-color','rip-grid','rip-count','rip-out','sealed-out',
   'col-list','col-new','col-stats','add-set','add-search','add-min',
   'op-set','op-boxes','op-cost','op-add','score-body',
-  'sets-tbl','sets-sub',
-  'sig-tbl','sig-min','sig-search','sig-rarity','sig-colour','sig-stats','sig-legend',
+  'sets-tbl','sets-sub','sets-analysis-status','sets-analysis-retry','set-analysis-close','set-box-product',
+  'sig-results','sig-min','sig-max','sig-search','sig-rarity','sig-set','sig-scope','sig-call',
+  'sig-counts','sig-status','sig-more','sig-retry','sig-tracking',
   'box-editor','reset-boxes','pr-profile','reset-rates',
   'data-url','data-test','data-save','data-msg','src-state',
   'clear-all','refresh-data','retry','modal-root','sync-chip'
@@ -64,7 +65,7 @@ function run() {
   h2('Files');
   const scripts = [...d.scripts].map(s => s.src.split('/').pop()).filter(Boolean);
   chk('index.html loaded', !!d.querySelector('#tabs'), scripts.join(', '));
-  for (const f of ['data.js','engine.js','collection.js','source.js','app.js']) {
+  for (const f of ['data.js','engine.js','collection.js','source.js','price-history.js','market-analysis.js','app.js']) {
     chk(f + ' is referenced', scripts.some(s => s.startsWith(f)),
         scripts.some(s => s.startsWith(f)) ? '' : 'not in the page at all',
         `${f} is missing from index.html — upload it, or upload the matching index.html`);

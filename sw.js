@@ -14,7 +14,7 @@
    capped so a flaky signal falls back rather than hanging.
    ========================================================================== */
 
-const CACHE = 'optcg-quant-v3';
+const CACHE = 'optcg-quant-v8';
 const NET_TIMEOUT_MS = 3000;
 
 /* The shell. Card data is not here — the app caches that itself in
@@ -27,6 +27,8 @@ const SHELL = [
   './engine.js',
   './collection.js',
   './source.js',
+  './price-history.js',
+  './market-analysis.js',
   './app.js',
   './manifest.json',
   './icons/icon-192.png',

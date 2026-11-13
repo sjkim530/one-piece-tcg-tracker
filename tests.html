@@ -413,6 +413,70 @@
     eq(C.livePlaced(ghost, cols).length, 0);
   });
 
+  /* ============================= unpriced cards must not sink =============== */
+  describe('an unpriced card is not a cheap card');
+
+  /* The bug: sorting on raw price put every card TCGplayer has no sold average
+     for at $0 — dead last — and the grid caps at 150. Unpriced cards are
+     disproportionately the RAREST, so the sort buried exactly what you were
+     hunting. OP-17 had 11 SP cards, 3 priced; the other 8 sat at positions
+     164-176 of 177. OP-13's Red Super Alt Art Luffy and Ace vanished the same
+     way. */
+  const mk = (name, rarity, price) => card({ card_name: name, rarity, market_price: price,
+                                             card_set_id: 'OP17-' + Math.random().toString(36).slice(2,5) });
+
+  it('an unpriced SEC ranks with the other SECs, not below the commons', () => {
+    const rows = [
+      mk('Priced SEC', 'SEC', 800),
+      mk('UNPRICED SEC', 'SEC', 0),
+      mk('Common A', 'C', 5),
+      mk('Common B', 'C', 4)
+    ];
+    const idx = E.buildSetIndex('X', rows, c => c.market_price || 0);
+    const order = idx.all.map(e => e.card.card_name);
+    ok(order.indexOf('UNPRICED SEC') < order.indexOf('Common A'),
+       'got ' + JSON.stringify(order));
+  });
+
+  it('the unpriced card is flagged, not silently valued', () => {
+    const idx = E.buildSetIndex('X', [mk('No price', 'SEC', 0), mk('Has price', 'SEC', 100)],
+                                c => c.market_price || 0);
+    const e = idx.all.find(x => x.card.card_name === 'No price');
+    eq(e.unpriced, true);
+    eq(e.price, 0, 'display price stays honest — we do not invent one');
+    ok(e.sortPrice > 0, 'only the sort key is proxied');
+  });
+
+  it('a slot where NOTHING is priced falls back to the set average', () => {
+    // OP-17 had two SP cards at PR rarity, both unpriced: their own slot
+    // averaged to zero and they sank right back to the bottom.
+    const rows = [
+      mk('Rich SR', 'SR', 500),
+      mk('Poor C', 'C', 1),
+      mk('Unpriced L one', 'L', 0),
+      mk('Unpriced L two', 'L', 0)
+    ];
+    const idx = E.buildSetIndex('X', rows, c => c.market_price || 0);
+    const order = idx.all.map(e => e.card.card_name);
+    ok(order.indexOf('Unpriced L one') < order.indexOf('Poor C'),
+       'an entirely unpriced slot must not sink below a $1 common: ' + JSON.stringify(order));
+  });
+
+  it('slot averages still use REAL prices only', () => {
+    // Letting the proxy feed back into the average that produced it would
+    // drift the set's EV upward every time it was recomputed.
+    const idx = E.buildSetIndex('X', [mk('A', 'SEC', 100), mk('B', 'SEC', 0)],
+                                c => c.market_price || 0);
+    eq(idx.slots.SEC.avgPrice, 100, 'the unpriced card must not dilute or inflate it');
+    eq(idx.slots.SEC.unpricedCount, 1);
+  });
+
+  it('maxPrice reports the real maximum, not a proxy', () => {
+    const idx = E.buildSetIndex('X', [mk('A', 'SEC', 250), mk('B', 'SEC', 0)],
+                                c => c.market_price || 0);
+    eq(idx.slots.SEC.maxPrice, 250);
+  });
+
   /* ===================================================== cardKey ========= */
   describe('cardKey — three separate id collisions, all real');
 

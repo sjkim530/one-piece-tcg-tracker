@@ -217,6 +217,7 @@ window.SRC = (function () {
       set_id: set.id,
       image: bigImage(row.imageUrl),
       buy_url: row.url || '',
+      printing: row.subTypeName || '',
       market_price: num(row.marketPrice),
       low_price: num(row.lowPrice),
       mid_price: num(row.midPrice),
@@ -342,7 +343,7 @@ window.SRC = (function () {
       const chosen = pick[row.productId];
       if (!chosen || chosen === row) continue;
       if (num(row.marketPrice) == null) continue;
-      alts[row.productId] = { printing: row.subTypeName || 'Other',
+      alts[row.productId] = { printing: row.subTypeName || '',
                               market: num(row.marketPrice), low: num(row.lowPrice) };
     }
 

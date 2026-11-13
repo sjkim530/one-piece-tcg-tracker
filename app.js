@@ -70,7 +70,7 @@
     cards: [],
     bySet: {},
     byKey: {},                       // cardKey -> card, for collection lookups
-    tab: 'rip',
+    tab: 'catalog',
     boxes:  load(KEY.boxes, {}),     // setId -> user box price (Set Explorer only)
     perCase: load(KEY.perCase, {}),  // setId -> boxes per case, when it is not 12
     rates:    load(KEY.rates, {}),     // profile -> { perBox, packsPerBox }
@@ -78,13 +78,10 @@
     prefs:  load(KEY.prefs, { friction: 100, advanced: false }),
     ripSet: null, ripCard: null, ripSearch: '', ripRarity: 'all', ripColor: 'all',
     gridLimit: 150,                 // raised by the "show all" control
-    sigSearch: '', sigRarity: 'all', sigColor: 'all',
     rateScope: null,                 // which scope the pull-rate editor is on
-    sigAutoScanned: false,
-    scanning: false, scanAbort: false,
     fetchedAt: null,
     indexCache: {},
-    sort: { sets: { by: 'roi', dir: -1 }, sig: { by: 'rank', dir: -1 } },
+    sort: { sets: { by: 'roi', dir: -1 } },
 
     // ---- collection
     cols:    load(KEY.cols, []),
@@ -345,13 +342,12 @@
      already drops this cache when a write fails, but living that close to the
      ceiling means the first symptom is a failed save of data you typed.
 
-     Five fields, ~1.1 MB, are removed on the way in:
+     Four fields are removed on the way in:
        card_image (485 KB)  derivable from id — it IS the id in a fixed URL
        set_name   (257 KB)  derivable from set_id via D.SETS
        direct_low (133 KB)  null on every single card; TCGplayer never fills it
        high_price (112 KB)  polluted with $9,999 placeholder listings and
                             deliberately never displayed
-       printing   (112 KB)  read nowhere outside source.js
 
      Everything still needed is rebuilt on read, so the rest of the app never
      learns this happened. */
@@ -359,7 +355,7 @@
 
   function slimCard(c) {
     const o = Object.assign({}, c);
-    delete o.card_image; delete o.set_name; delete o.printing;
+    delete o.card_image; delete o.set_name;
     delete o.high_price; delete o.direct_low_price;
     // Only drop the image when it is exactly what we can rebuild.
     if (c.card_image !== IMG_BASE + c.id + '_400w.jpg') o.card_image = c.card_image;
@@ -382,7 +378,10 @@
       // them into a v2 app would look fine and be subtly wrong everywhere, so
       // a cache without ids is discarded and refetched rather than migrated.
       if (cached && cached.rows && cached.rows.length && cached.rows[0].id != null) {
-        applyCards(cached.rows.map(fatCard), cached.at, cached.products || []);
+        const cards = cached.rows.map(fatCard);
+        const products = cached.products || [];
+        applyCards(cards, cached.at, products, cached.feed);
+        if (cards[0].printing !== undefined) saveDailyPrices(cached.feed, cards, products);
         return { fromCache: true };
       }
     }
@@ -392,8 +391,22 @@
     // The set list is built from the live group list rather than hardcoded, so
     // a set TCGplayer adds tomorrow shows up without a code change — it lands
     // in the promo namespace until it is given pull rates in data.js.
+    return fetchCurrentCards(await SRC.loadUpdated());
+  }
+
+  async function refreshCachedCards() {
+    const updated = await SRC.loadUpdated();
+    if (!updated) return;
+    if (S.catalogFeed?.updated === updated && S.catalogFeed.mock === SRC.isMock() &&
+        S.cards[0]?.printing !== undefined) return;
+    return fetchCurrentCards(updated);
+  }
+
+  async function fetchCurrentCards(updated) {
+    const mock = SRC.isMock();
     const sets = await SRC.buildSets(D.SETS);
-    const { cards, products, failed } = await SRC.loadAll(sets);
+    const result = await SRC.loadAll(sets);
+    const { cards, products, failed } = result;
 
     if (!cards.length) {
       throw new Error(failed.length
@@ -407,14 +420,24 @@
     const complete = failed.length === 0;
 
     const at = new Date().toISOString();
-    if (complete) save(KEY.cards, { at, rows: cards.map(slimCard), products });
-    applyCards(cards, at, products);
+    const feed = { updated, mock };
+    if (complete) save(KEY.cards, { at, rows: cards.map(slimCard), products, feed });
+    applyCards(cards, at, products, feed);
+    if (complete) saveDailyPrices(feed, cards, products);
     S.loadFailures = failed;
     return { fromCache: false, failed };
   }
 
-  function applyCards(rows, at, products) {
+  function saveDailyPrices(feed, cards, products) {
+    S.historyWrite = OQ_HISTORY.record(feed, cards, products).catch(error => {
+      console.warn('[optcg] could not save daily prices', error);
+    });
+    return S.historyWrite;
+  }
+
+  function applyCards(rows, at, products, feed) {
     S.fetchedAt = at;
+    S.catalogFeed = feed;
     S.bySet = {};
     S.byKey = {};
     // Dedupe is kept even though productId is unique, because it costs nothing
@@ -429,6 +452,7 @@
       (S.bySet[c.set_id] = S.bySet[c.set_id] || []).push(c);
     }
     S.cards = deduped;
+    S.catalogIndex = null;
 
     // Sealed products, indexed by set. v1 had none of this — box prices were
     // hardcoded estimates in data.js.
@@ -989,12 +1013,13 @@
           ${dealBox}
           ${evBlock}
           <div class="tbl-scroll"><table class="tbl">
-            <thead><tr><th>Product</th><th class="num">Market</th><th class="num">Lowest</th><th></th></tr></thead>
+            <thead><tr><th>Product</th><th class="num">Market</th><th class="num">Lowest</th><th>Price history</th><th></th></tr></thead>
             <tbody>${list.map(p => `
               <tr>
                 <td>${esc(p.name)}</td>
                 <td class="num"><b>${E.money(p.market_price)}</b></td>
                 <td class="num muted">${p.low_price ? E.money(p.low_price) : '—'}</td>
+                <td><button class="btn small" type="button" data-sealed-history="${esc(p.id)}">Chart</button></td>
                 <td class="num">${p.buy_url
                   ? `<a class="btn ghost small" href="${esc(p.buy_url)}" target="_blank" rel="noopener nofollow">Buy</a>`
                   : ''}</td>
@@ -1003,6 +1028,15 @@
           </table></div>
         </div>
       </div>`;
+    out.querySelectorAll('[data-sealed-history]').forEach(button => button.addEventListener('click', () => {
+      const product = list.find(item => String(item.id) === button.dataset.sealedHistory);
+      const dialog = $('#sealed-history-dialog');
+      $('#sealed-history-title').textContent = product.name;
+      dialog.showModal();
+      const chart = $('#sealed-history-chart');
+      if (product.printing == null) chart.textContent = 'Refresh card data to identify this product for the chart.';
+      else showPriceHistory(chart, product.id, [product.printing]);
+    }));
     wireCollapsibles();
   }
 
@@ -1303,6 +1337,146 @@
 
   /* ======================================================= SET EXPLORER == */
 
+  let sealedRun;
+  let openSealedSet;
+
+  function sealedBoxes(setId) {
+    const listing = product => product.low_price > 0 ? product.low_price : Infinity;
+    return (S.sealedBySet?.[setId] || []).filter(product => product.kind === 'box')
+      .sort((a, b) => listing(a) - listing(b) || Number(a.id) - Number(b.id));
+  }
+
+  function loadSealedCalls() {
+    const today = Math.floor(Date.now() / 86400000);
+    if (sealedRun?.cards === S.cards && sealedRun.today === today) return;
+    const run = sealedRun = { cards: S.cards, today };
+    const sets = liveSets();
+    const boxes = sets.flatMap(set => sealedBoxes(set.id)).filter(box => box.printing != null);
+    const pools = sets.map(set => [set.id, indexFor(set.id).all]);
+    const scan = (entries, evaluate) => OQ_HISTORY.scan(entries, evaluate, () => {});
+    (async () => {
+      await S.historyWrite;
+      const quotes = await scan(boxes.map(box => ({ card: box, printing: box.printing })),
+        ({ card }, points) => ({ box: card, points }));
+      if (sealedRun !== run) return;
+      const daysBySet = new Map();
+      for (const { box, points } of quotes.rows) {
+        const day = points.at(-1)?.[0];
+        if (day == null || day > today || today - day > 3) continue;
+        if (!daysBySet.has(box.set_id)) daysBySet.set(box.set_id, new Set());
+        daysBySet.get(box.set_id).add(day);
+      }
+      const entries = pools.flatMap(([setId, pool]) => daysBySet.has(setId)
+        ? pool.filter(entry => entry.card.printing != null).map(({ card }) => ({
+          card, printing: card.printing, setId
+        })) : []);
+      const moves = new Map();
+      const prices = run.singlesPrices = new Map();
+      const singles = await scan(entries, ({ card, setId }, points) => {
+        for (const day of daysBySet.get(setId)) {
+          const key = setId + ':' + day;
+          const quote = points.findLast(point => point[0] <= day);
+          if (quote?.[0] === day) {
+            if (!prices.has(key)) prices.set(key, new Map());
+            prices.get(key).set(E.cardKey(card), quote[1] / 100);
+          }
+          const move = OQ_MARKET.marketWindow(points, day);
+          if (move != null) {
+            if (!moves.has(key)) moves.set(key, []);
+            moves.get(key).push(move);
+          }
+        }
+      });
+      if (sealedRun !== run) return;
+      const counts = new Map(pools.map(([id, pool]) => [id, pool.length]));
+      run.calls = new Map(quotes.rows.map(({ box, points }) => [String(box.id),
+        OQ_MARKET.analyzeSealed(points, today, moves.get(box.set_id + ':' + points.at(-1)?.[0]) || [],
+          counts.get(box.set_id))]));
+      run.incomplete = quotes.unavailable || singles.unavailable ||
+        quotes.storageUnavailable || singles.storageUnavailable;
+    })().catch(error => {
+      run.error = true;
+      console.warn('[optcg] sealed analysis failed', error);
+    }).finally(() => {
+      if (sealedRun !== run || S.tab !== 'sets') return;
+      updateSealedCalls();
+      if ($('#set-analysis-dialog').open) renderSetAnalysis();
+    });
+  }
+
+  function sealedCall(box) {
+    if (!box) return { call: 'Insufficient data', reason: 'No booster box was found for this set.' };
+    if (box.printing == null) return { call: 'Insufficient data', reason: 'Refresh the catalog to identify this box printing.' };
+    if (sealedRun.error) return { call: 'Insufficient data', reason: 'The price history could not load.' };
+    if (!sealedRun.calls) return { call: 'Loading…', reason: 'Loading box and singles history.' };
+    return sealedRun.calls.get(String(box.id)) || { call: 'Insufficient data', reason: 'No box history is available.' };
+  }
+
+  function updateSealedCalls() {
+    $$('[data-set-call]').forEach(button => {
+      const box = sealedBoxes(button.dataset.setCall)[0];
+      const { call } = sealedCall(box);
+      button.textContent = call;
+      button.dataset.call = call;
+      button.title = box?.name || 'Set analysis';
+      button.setAttribute('aria-label', `${call} · ${box?.name || setName(button.dataset.setCall)}`);
+    });
+    $('#sets-analysis-status').textContent = sealedRun.error ? 'The analysis could not load.' :
+      sealedRun.incomplete ? 'Some price history could not load.' : '';
+    $('#sets-analysis-retry').hidden = !(sealedRun.error || sealedRun.incomplete);
+  }
+
+  function renderSetAnalysis() {
+    const { id } = openSealedSet;
+    const box = sealedBoxes(id).find(product => String(product.id) === $('#set-box-product').value);
+    const analysis = sealedCall(box);
+    const money = cents => cents == null ? '—' : E.money(cents / 100, 2);
+    const trend = value => value == null ? '—' : (value > 0 ? '+' : '') + E.pct(value);
+    const prices = sealedRun.singlesPrices?.get(id + ':' + analysis.day);
+    const index = E.buildSetIndex(id, S.bySet[id] || [], card => prices?.get(E.cardKey(card)) || 0);
+    const config = configFor(id);
+    const ev = E.evaluate(index, config).evBox;
+    const concentration = E.chaseConcentration(index, config, 5);
+    const modelFits = E.configFit(index, config).ok;
+    const coverage = index.all.length ? index.all.filter(entry => entry.price > 0).length / index.all.length : 0;
+    const listing = analysis.listing;
+    const evWithoutTopFive = ev - concentration.top.reduce((sum, pull) => sum + pull.value, 0);
+    let opening = analysis.call === 'Loading…' ? 'Loading…' : 'Insufficient data';
+    if (modelFits && coverage >= .6 && ev > 0 && listing > 0) {
+      opening = listing > ev * 100 ? 'Buy singles' :
+        listing > evWithoutTopFive * 100 ? 'Depends on chase cards' : 'Consider opening';
+    }
+    $('#set-analysis-body').innerHTML = `
+      <section class="price-history">
+        <div class="history-toolbar"><h3>Buying sealed</h3>
+          <strong class="market-call" data-call="${esc(analysis.call)}">${esc(analysis.call)}</strong></div>
+        <p class="small">${esc(analysis.reason)}</p>
+        <dl class="market-evidence">
+          <div><dt>Market price</dt><dd>${money(analysis.market)}</dd></div>
+          <div><dt>Lowest listing</dt><dd>${money(listing)}</dd></div>
+          <div><dt>90-day box median</dt><dd>${money(analysis.median)}</dd></div>
+          <div><dt>Box trend over 30 days</dt><dd>${trend(analysis.momentum)}</dd></div>
+          <div><dt>Median singles trend over 30 days</dt><dd>${trend(analysis.singles)}</dd></div>
+          <div><dt>Quote date</dt><dd>${analysis.day == null ? '—' : esc(OQ_HISTORY.dateLabel(analysis.day))}</dd></div>
+        </dl>
+        ${analysis.buyPrice != null ? `<p class="small">Buy at <b>${money(analysis.buyPrice)}</b> or less when the box trend is down no more than 10% and the singles trend is down no more than 5%. Pass at <b>${money(analysis.passPrice)}</b> or more. These thresholds use the latest quote and change with the data.</p>` : ''}
+        ${analysis.singlesCount ? `<p class="small muted">Singles trend uses ${analysis.matched} of ${analysis.singlesCount} pullable printings with comparable price history.</p>` : ''}
+      </section>
+      <section class="price-history">
+        <div class="history-toolbar"><h3>Open or buy singles</h3><strong>${opening}</strong></div>
+        ${modelFits && ev > 0 ? `<p class="small">Estimated contents average <b>${E.money(ev, 2)}</b> per box before costs, or <b>${E.money(evWithoutTopFive, 2)}</b> excluding the five largest priced contributors. Those five account for ${E.pct(concentration.share, 0)} of expected value from individually priced cards.</p>
+        <ul class="small">${concentration.top.filter(pull => pull.value > 0).map(pull =>
+          `<li>${esc(pull.entry.card.card_name)} · ${E.money(pull.value, 2)} expected value per box</li>`).join('')}</ul>` : ''}
+        <p class="small muted">${!modelFits ? 'The pull-rate model does not fit the catalog. ' : !config.verified ? 'Pull rates for this set are estimated. ' : ''}${E.pct(coverage, 0)} of pullable cards have a price on the box quote date. A comparison requires at least 60%. Use Rip vs Buy for the odds on a specific card.</p>
+      </section>`;
+    const chartKey = JSON.stringify([box?.id, box?.printing, S.fetchedAt]);
+    if (openSealedSet.chartKey === chartKey) return;
+    openSealedSet.chartKey = chartKey;
+    const chart = $('#set-analysis-chart');
+    if (box?.printing != null) showPriceHistory(chart, box.id, [box.printing]);
+    else chart.replaceChildren();
+  }
+
   function setRows() {
     return liveSets().map(s => {
       const idx  = indexFor(s.id);
@@ -1334,6 +1508,7 @@
   }
 
   function renderSets() {
+    loadSealedCalls();
     const tbody = $('#sets-tbl tbody');
     const rows = setRows();
     const { by, dir } = S.sort.sets;
@@ -1350,6 +1525,7 @@
         <td><button type="button" class="rowlink" data-set="${esc(r.id)}">
           <b>${esc(r.short)}</b> <span class="muted small">${esc(r.name)}</span></button>
           ${r.unverified ? ' <span class="tag est">? unverified pack structure</span>' : ''}</td>
+        <td data-l="Sealed call"><button class="btn small market-call" type="button" data-set-call="${esc(r.id)}"></button></td>
         <td class="num" data-l="Box price">${E.money(r.box)}${r.est ? ' <span class="tag est">EST</span>' : ''}</td>
         <td class="num" data-l="Case">${r.case_ == null ? '<span class="muted">—</span>' : E.money(r.case_)}</td>
         <td class="num" data-l="EV / box">${E.money(r.evBox)}</td>
@@ -1379,167 +1555,218 @@
     };
     $$('#sets-tbl tbody .rowlink').forEach(b =>
       b.addEventListener('click', e => { e.stopPropagation(); openSet(b.dataset.set); }));
+    $$('[data-set-call]').forEach(button => button.addEventListener('click', event => {
+      event.stopPropagation();
+      const id = button.dataset.setCall;
+      openSealedSet = { id };
+      $('#set-analysis-title').textContent = setName(id);
+      const select = $('#set-box-product');
+      catalogOptions(select, sealedBoxes(id).map(box => [String(box.id), box.name]));
+      select.selectedIndex = 0;
+      $('#set-box-picker').hidden = !select.options.length;
+      $('#set-analysis-chart').replaceChildren();
+      renderSetAnalysis();
+      $('#set-analysis-dialog').showModal();
+    }));
     $$('#sets-tbl tbody tr').forEach(tr =>
       tr.addEventListener('click', () => openSet(tr.dataset.set)));
+    updateSealedCalls();
+    if ($('#set-analysis-dialog').open) renderSetAnalysis();
   }
 
   /* ============================================================ SIGNALS == */
 
-  /* Rank drives the default sort: actionable and confirmed first, noise last. */
-  const TAG_RANK = { BUY: 5, TRIM: 4, HOLD: 3, WATCH: 2, AVOID: 1, STALE: -1 };
-
-  function signalRows() {
-    // Thresholds are relative to each price band, computed from the whole
-    // catalogue rather than the filtered view — otherwise raising the price
-    // filter would move the goalposts and re-label the same cards.
-    const bands = E.spreadBands(S.cards);
-
-    const min  = Number($('#sig-min').value) || 0;
-    const q    = S.sigSearch.trim().toLowerCase();
-    const slot = S.sigRarity || 'all';
-    const colr = S.sigColor || 'all';
-    const chaseKeys = ['SEC', 'ALT', 'SP', 'MANGA', 'ULTRA', 'TR'];
-
-    // Which cards do I own, and which are earmarked to sell?
-    const ownedAny = {}, ownedTrade = {};
-    for (const it of C.live(S.items)) {
-      ownedAny[it.key] = true;
-      const col = S.cols.find(c => c.id === it.colId);
-      if (col && col.kind === 'trade') ownedTrade[it.key] = true;
-    }
-
-    const out = [];
-    for (const s of liveSets()) {
-      // Pre-sorted by price descending, so the first entry below the floor
-      // means every remaining entry is too.
-      const entries = indexFor(s.id).all;
-      for (const e of entries) {
-        {
-          if (e.price < min) break;
-
-          if (q && !(e.card.card_name.toLowerCase().includes(q) ||
-                     String(e.card.card_set_id || '').toLowerCase().includes(q))) continue;
-
-          if (slot === 'chase') { if (chaseKeys.indexOf(e.slot) < 0) continue; }
-          else if (slot !== 'all' && e.slot !== slot) continue;
-
-          // Multicolour cards match every colour they contain.
-          if (colr !== 'all' && !hasColor(e.card, colr)) continue;
-
-          const sig = E.spreadSignal(e.card);
-          if (!sig) continue;
-          const age = E.staleness(e.card, null);
-
-          // v2 has no price history: TCGCSV publishes today's build and
-          // discards yesterday's. actionTag already treats a null history as
-          // "unconfirmed" and degrades BUY to WATCH, which is the honest
-          // reading when momentum cannot be checked at all.
-          const hist = null;
-
-          const tag = E.actionTag({
-            band: E.bandFor(bands, e.card.market_price),
-            sig, age, hist,
-            owned: !!ownedAny[e.key],
-            ownedTrade: !!ownedTrade[e.key]
-          });
-
-          out.push({
-            entry: e, sig, setId: s.id, hist, tag,
-            market: sig.market, inv: sig.inventory, mid: sig.mid,
-            ratio: sig.ratio, score: sig.score, age,
-            change: hist ? hist.changePct : null,
-            rank: tag ? (TAG_RANK[tag.code] || 0) : 0
-          });
-        }
-      }
-    }
-    return out;
-  }
-
+  const scannerPage = 48;
+  const scannerOrder = ['Sell Now', 'Buy Now', 'Hold', 'Insufficient data'];
+  let scannerLimit = scannerPage;
+  let scannerRun;
 
   function renderSignals() {
-    fillSignalFilters();
-    const tbody = $('#sig-tbl tbody');
-    const stats = $('#sig-stats');
+    const today = Math.floor(Date.now() / 86400000);
+    if (scannerRun?.cards !== S.cards || scannerRun.today !== today) {
+      scannerRun = { cards: S.cards, today };
+      catalogOptions($('#sig-set'), [['', 'All sets'], ...browseSets().map(set => [set.id, set.name])]);
+      const rarities = [...new Set(S.cards.map(card => E.rarityBadge(card).label))].sort();
+      catalogOptions($('#sig-rarity'), [['', 'All rarities'], ...rarities.map(rarity => [rarity, rarity])]);
+      scanSignals(scannerRun);
+    }
+    renderScannerResults();
+  }
 
-    const rows = signalRows();
-    // v1 dropped rows whose price was over STALE_DAYS old. TCGplayer publishes
-    // no per-card scrape time, so that check cannot run and every row would
-    // count as fresh — reporting "0 too stale" would be a check pretending to
-    // happen. The whole catalogue is one daily build, so freshness is uniform.
-    const bargains = rows.filter(r => r.tag && r.tag.code === 'BUY');
-    const noCheap  = rows.filter(r => r.tag && r.tag.label === 'NO CHEAP COPY');
-    const spread = rows.filter(r => r.sig).length;
+  async function scanSignals(run) {
+    try {
+      await S.historyWrite;
+      const entries = run.cards.flatMap(card => {
+        const printings = new Set([card.printing, card.alt_printing?.printing].filter(value => value != null));
+        if (!printings.size) printings.add(null);
+        return [...printings].map(printing => ({
+          card, printing, key: E.cardKey(card), rarity: E.rarityBadge(card).label,
+          id: JSON.stringify([String(card.id), printing])
+        }));
+      });
+      let tracked = [];
+      let trackingUnavailable = false;
+      try { tracked = await OQ_HISTORY.trackedCalls(); }
+      catch { trackingUnavailable = true; }
+      const byPrinting = new Map();
+      for (const row of tracked) {
+        if (!byPrinting.has(row.id)) byPrinting.set(row.id, []);
+        byPrinting.get(row.id).push(row);
+      }
+      const updates = [];
+      const updated = Date.parse(S.catalogFeed?.updated);
+      const liveDay = !S.catalogFeed?.mock && !S.loadFailures?.length && Number.isFinite(updated)
+        ? Math.floor(updated / 86400000) : null;
+      const result = await OQ_HISTORY.scan(entries, (entry, points) => {
+        points = entry.printing == null ? [] : points;
+        const analysis = OQ_MARKET.analyze(points, run.today);
+        for (const saved of byPrinting.get(entry.id) || []) {
+          const outcomes = { ...saved.outcomes };
+          for (const horizon of [30, 90]) {
+            if (outcomes[horizon] != null) continue;
+            const quote = points.find(point => point[0] === saved.day + horizon);
+            if (quote) outcomes[horizon] = quote[1];
+          }
+          if (Object.keys(outcomes).length !== Object.keys(saved.outcomes).length) {
+            updates.push({ ...saved, outcomes });
+          }
+        }
+        if (liveDay !== null && analysis.day === liveDay && ['Buy Now', 'Sell Now'].includes(analysis.call)) {
+          updates.push({ id: entry.id, day: liveDay, market: analysis.market, call: analysis.call, outcomes: {} });
+        }
+        return {
+          ...entry, analysis, latest: points.at(-1),
+          search: searchWords([entry.card.card_name, entry.card.card_set_id, entry.rarity].join(' ')),
+          number: searchWords(entry.card.card_set_id).replace(/ /g, '')
+        };
+      }, (done, total) => {
+        if (scannerRun === run && (done % 16 === 0 || done === total)) {
+          $('#sig-status').textContent = `Scanning price history (${done} of ${total})…`;
+        }
+      });
+      if (scannerRun !== run) return;
+      Object.assign(run, result);
+      renderScannerResults();
+      try {
+        if (trackingUnavailable) throw new Error('Local tracking unavailable');
+        await OQ_HISTORY.saveTrackedCalls(updates);
+        tracked = await OQ_HISTORY.trackedCalls();
+        if (scannerRun === run) renderSignalTracking(tracked);
+      } catch {
+        if (scannerRun === run) $('#sig-tracking').textContent = 'Signal tracking could not access browser storage.';
+      }
+    } catch (error) {
+      if (scannerRun !== run) return;
+      run.error = true;
+      renderScannerResults();
+      console.warn('[optcg] market scan failed', error);
+    }
+  }
 
-    stats.innerHTML =
-      stat('Cards tracked', rows.length.toLocaleString(), 'priced in today’s build') +
-      stat('Bargains', bargains.length.toLocaleString(),
-           'cheapest decile for their price band', 'hero') +
-      stat('No cheap copy', noCheap.length.toLocaleString(),
-           'every listing above the sold average') +
-      stat('Priced', spread.toLocaleString(), 'both market and listing available');
+  function renderSignalTracking(tracked) {
+    const host = $('#sig-tracking');
+    if (!tracked.length) {
+      host.textContent = 'No live Buy or Sell calls recorded in this browser yet.';
+      return;
+    }
+    host.innerHTML = `<p>${tracked.length.toLocaleString()} recorded calls</p>` +
+      [30, 90].map(horizon => `<p><strong>${horizon} days</strong> · ` +
+        ['Buy Now', 'Sell Now'].map(call => {
+          const matching = tracked.filter(row => row.call === call);
+          const measured = matching.filter(row => row.outcomes[horizon] != null);
+          const correct = measured.filter(row => call === 'Buy Now'
+            ? row.outcomes[horizon] > row.market : row.outcomes[horizon] < row.market);
+          return `${call}: ${correct.length} of ${measured.length} moved as flagged` +
+            (matching.length > measured.length ? ` (${matching.length - measured.length} without a forward quote)` : '');
+        }).join(' · ') + '</p>').join('');
+  }
 
-    // v2 reads supply only. The momentum half of the old model is gone with
-    // the history feed, so every call rests on the listing-to-market spread
-    // alone — which is why BUY now needs a wider gap to fire than it did when
-    // a rising 13-day trend could corroborate it.
-    $('#sig-legend').innerHTML =
-      `<b>BARGAIN</b> listed in the cheapest 10% for its price range, and you do
-         not own it ·
-       <b>TRIM</b> in your trade binder and being undercut that hard ·
-       <b>HOLD</b> you own it and nobody is undercutting you ·
-       <b>NO CHEAP COPY</b> every listing sits above the sold average — hard to
-         buy near market, which is <em>not</em> the same as a buy.
-       Thresholds are per price band, measured from the live catalogue, because
-       the listing-to-market ratio rises with price: at $500+ the median card
-       already lists above market, so one fixed cut-off would just select
-       expensive cards. TCGplayer publishes no price history, so nothing here
-       says which way a price is moving — and a very cheap listing may simply
-       be a damaged copy. Check before you buy.`;
+  function renderScannerResults() {
+    const run = scannerRun;
+    const status = $('#sig-status');
+    const results = $('#sig-results');
+    const counts = $('#sig-counts');
+    const more = $('#sig-more');
+    const retry = $('#sig-retry');
+    retry.hidden = !(run?.error || run?.unavailable || run?.storageUnavailable);
+    if (!run?.rows) {
+      status.textContent = run?.error ? 'Could not complete the scan.' : 'Loading price history…';
+      results.replaceChildren();
+      counts.replaceChildren();
+      $('#sig-tracking').textContent = '';
+      more.hidden = true;
+      return;
+    }
+    const ownedOnly = $('#sig-scope').value === 'owned';
+    const owned = ownedOnly ? new Set(C.livePlaced(S.items, S.cols).map(item => String(item.key))) : null;
+    const call = $('#sig-call').value;
+    const set = $('#sig-set').value;
+    const rarity = $('#sig-rarity').value;
+    const min = $('#sig-min').valueAsNumber * 100;
+    const max = $('#sig-max').valueAsNumber * 100;
+    const query = searchWords($('#sig-search').value);
+    const tokens = query ? query.split(' ') : [];
+    const compact = tokens.join('');
+    const totals = Object.fromEntries(scannerOrder.map(label => [label, 0]));
+    const filtered = [];
+    for (const row of run.rows) {
+      const market = row.latest?.[1];
+      if ((owned && (!owned.has(String(row.key)) || row.printing !== row.card.printing)) ||
+          (set && row.card.set_id !== set) || (rarity && row.rarity !== rarity) ||
+          (Number.isFinite(min) && (market == null || market < Math.round(min))) ||
+          (Number.isFinite(max) && (market == null || market > Math.round(max))) ||
+          (query && !row.number.startsWith(compact) && !tokens.every(token => row.search.includes(token)))) continue;
+      totals[row.analysis.call]++;
+      if (!call || call === row.analysis.call) filtered.push(row);
+    }
+    filtered.sort((a, b) => scannerOrder.indexOf(a.analysis.call) - scannerOrder.indexOf(b.analysis.call) ||
+      Math.abs(b.analysis.momentum || 0) - Math.abs(a.analysis.momentum || 0) ||
+      (b.latest?.[1] || 0) - (a.latest?.[1] || 0) || a.id.localeCompare(b.id));
+    counts.innerHTML = scannerOrder.map(label => `<button class="btn market-call" data-call="${esc(label)}"
+      aria-pressed="${label === call}">${esc(label)} · ${totals[label].toLocaleString()}</button>`).join('');
+    const unavailable = run.unavailable ? ` ${run.unavailable} archive groups could not load.` : '';
+    const storage = run.storageUnavailable ? ' Browser snapshots could not load.' : '';
+    status.textContent = `${filtered.length.toLocaleString()} matching printings.` + unavailable + storage;
+    const display = filtered.slice(0, scannerLimit);
+    results.innerHTML = display.map(row => {
+      const { card, analysis, latest } = row;
+      const label = [card.card_set_id, card.set_name || setName(card.set_id), row.rarity, row.printing].filter(Boolean).join(' · ');
+      return `<button class="scanner-card" type="button" data-id="${esc(row.id)}">
+        <span class="scanner-card-top"><strong>${esc(card.card_name)}</strong>
+          <span class="market-call" data-call="${esc(analysis.call)}">${esc(analysis.call)}</span></span>
+        <span class="small muted">${esc(label)}</span>
+        <span class="small">${latest ? E.money(latest[1] / 100, 2) + ' · ' + esc(OQ_HISTORY.dateLabel(latest[0])) : 'No recorded quote'}</span>
+        <span class="small muted">${esc(analysis.reason)}</span>
+      </button>`;
+    }).join('') || '<p class="muted">No printings match these filters.</p>';
+    more.hidden = filtered.length <= scannerLimit;
+  }
 
-    const { by, dir } = S.sort.sig;
-    rows.sort((a, b) => {
-      const av = a[by], bv = b[by];
-      if (av == null && bv == null) return 0;
-      if (av == null) return 1;          // nulls last regardless of direction
-      if (bv == null) return -1;
-      return (av - bv) * dir;
+  function wireSignals() {
+    const reset = () => { scannerLimit = scannerPage; renderSignals(); };
+    for (const filter of ['scope', 'call', 'set', 'rarity']) on('#sig-' + filter, 'change', reset);
+    for (const filter of ['search', 'min', 'max']) on('#sig-' + filter, 'input', reset);
+    on('#sig-counts', 'click', event => {
+      const button = event.target.closest('[data-call]');
+      if (!button) return;
+      const select = $('#sig-call');
+      select.value = select.value === button.dataset.call ? '' : button.dataset.call;
+      reset();
+      $('#sig-counts').querySelector(`[data-call="${button.dataset.call}"]`)?.focus();
     });
-
-    tbody.innerHTML = rows.slice(0, 400).map(r => {
-      const c = r.entry.card;
-      const isStale = r.tag && r.tag.code === 'STALE';
-      return `<tr class="clickable${isStale ? ' rowstale' : ''}"
-                  data-key="${esc(r.entry.key)}" data-set="${esc(r.setId)}">
-        <td><button type="button" class="rowlink" data-key="${esc(r.entry.key)}" data-set="${esc(r.setId)}">
-          <span class="cardcell">
-            <img src="${esc(c.card_image)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
-            <span class="nm"><b>${esc(c.card_name)}</b><span>${esc(c.card_set_id)}</span></span>
-          </span>
-        </button></td>
-        <td data-l="Set"><span class="tag">${esc(setShort(r.setId))}</span></td>
-        <td class="num" data-l="Market">${E.money(r.market)}</td>
-        <td class="num muted" data-l="Floor">${E.money(r.inv)}</td>
-        <td class="num muted" data-l="Mid">${r.mid ? E.money(r.mid) : '—'}</td>
-        <td class="num" data-l="Floor / market">${E.pct(r.ratio, 0)}</td>
-        <td class="num" data-l="Supply">${isStale ? '<span class="badge-state st-NORMAL">—</span>'
-                                  : `<span class="badge-state st-${r.sig.state}">${r.sig.state}</span>`}</td>
-        <td class="num why" data-l="Call">${r.tag
-          ? `<span class="call call-${r.tag.code}">${r.tag.label}</span>
-             <span class="whytxt">${esc(r.tag.why)}</span>`
-          : '<span class="muted">—</span>'}</td>
-      </tr>`;
-    }).join('') || `<tr><td colspan="8" class="muted">Nothing matches those filters.</td></tr>`;
-
-    const openCard = (setId, key) => {
-      S.ripSet = setId; S.ripCard = key; S.ripSearch = '';
-      const q = $('#rip-search'); if (q) q.value = '';
-      switchTab('rip');
-    };
-    $$('#sig-tbl tbody .rowlink').forEach(b =>
-      b.addEventListener('click', e => { e.stopPropagation(); openCard(b.dataset.set, b.dataset.key); }));
-    $$('#sig-tbl tbody tr[data-key]').forEach(tr =>
-      tr.addEventListener('click', () => openCard(tr.dataset.set, tr.dataset.key)));
+    on('#sig-retry', 'click', () => { scannerRun = null; reset(); });
+    on('#sig-more', 'click', () => {
+      const previous = scannerLimit;
+      scannerLimit += scannerPage;
+      renderScannerResults();
+      $('#sig-results').children[previous]?.focus();
+    });
+    on('#sig-results', 'click', event => {
+      const button = event.target.closest('[data-id]');
+      if (!button) return;
+      const row = scannerRun.rows.find(item => item.id === button.dataset.id);
+      if (row) openCatalogCard(row.key, row.printing);
+    });
   }
 
   /* =========================================================== SETTINGS == */
@@ -2443,6 +2670,8 @@
       setSync('ok', 'synced');
       if (!silent) renderCollection();
       else if (S.tab === 'collection') renderCollection();
+      if (S.tab === 'signals') renderScannerResults();
+      if ($('#catalog-dialog').open) renderCatalogCard();
     } catch (err) {
       setSync('err', err.message);
     }
@@ -2565,6 +2794,319 @@
     });
   }
 
+  /* ============================================================= CATALOG == */
+
+  const CATALOG_PAGE = 48;
+  const catalogFilters = ['set', 'rarity', 'type', 'color'];
+  let catalogLimit = CATALOG_PAGE;
+  let catalogCardKey = null;
+  let catalogHistoryKey = null;
+  let catalogPrinting;
+
+  function showPriceHistory(container, id, printings, onPrintingChange, initialPrinting) {
+    const pending = S.historyWrite || Promise.resolve();
+    // Let an in-flight snapshot commit before reading the latest day.
+    const loading = document.createElement('p');
+    loading.className = 'small muted';
+    loading.textContent = 'Loading prices…';
+    container.replaceChildren(loading);
+    pending.then(() => {
+      if (loading.parentElement === container) {
+        OQ_HISTORY.chart(container, id, [...new Set(printings)], onPrintingChange, initialPrinting);
+      }
+    });
+  }
+
+  const searchWords = value => String(value || '').normalize('NFKD').toLowerCase()
+    .replace(/\p{M}/gu, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const catalogPrice = value => value > 0 ? E.money(value) : 'Unavailable';
+
+  function catalogDate() {
+    const feed = S.catalogFeed;
+    const date = new Date(feed?.updated || S.fetchedAt);
+    if (!S.fetchedAt || !Number.isFinite(date.getTime())) return '';
+    const label = feed?.mock ? 'Local price snapshot' :
+      feed?.updated ? 'TCGplayer snapshot' : 'Prices fetched';
+    return label + ' · ' + date.toLocaleDateString(undefined, {
+      month: 'short', day: 'numeric', year: 'numeric'
+    });
+  }
+
+  function catalogOptions(select, options) {
+    const value = select.value;
+    select.replaceChildren(...options.map(([id, label]) => new Option(label, id)));
+    if (options.some(([id]) => id === value)) select.value = value;
+  }
+
+  function renderCatalog() {
+    const sets = browseSets();
+    const setLabels = new Map(sets.map(set => [set.id, set.name]));
+    if (!S.catalogIndex) {
+      S.catalogIndex = S.cards.map(card => {
+        const badge = E.rarityBadge(card);
+        const name = searchWords(card.card_name);
+        const number = searchWords(card.card_set_id).replace(/ /g, '');
+        return {
+          card, badge, name, number,
+          terms: searchWords([card.card_name, card.card_set_id, card.set_id,
+            card.set_name, setLabels.get(card.set_id), badge.label, card.card_type].join(' '))
+        };
+      });
+    }
+    const distinct = values => [...new Set(values.filter(Boolean))].sort().map(value => [value, value]);
+    const rows = S.catalogIndex;
+    catalogOptions($('#catalog-set'), [['', 'All sets'], ...sets.map(set => [set.id, set.short + ' · ' + set.name])]);
+    catalogOptions($('#catalog-rarity'), [['', 'All rarities and variants'], ...distinct(rows.map(row => row.badge.label))]);
+    catalogOptions($('#catalog-type'), [['', 'All card types'], ...distinct(rows.map(row => row.card.card_type))]);
+    catalogOptions($('#catalog-color'), [['', 'All colours'], ...distinct(['Red', 'Green', 'Blue', 'Purple', 'Black', 'Yellow'])]);
+    $('#catalog-date').textContent = catalogDate();
+    renderCatalogResults();
+    if ($('#catalog-dialog').open) renderCatalogCard();
+  }
+
+  function renderCatalogResults(append = false) {
+    const [set, rarity, type, color] = catalogFilters.map(filter => $('#catalog-' + filter).value);
+    const query = searchWords($('#catalog-query').value);
+    const tokens = query ? query.split(' ') : [];
+    const code = query.replace(/ /g, '');
+    const sort = $('#catalog-sort').value;
+    const matches = [];
+    for (const row of S.catalogIndex || []) {
+      const { card } = row;
+      if (set && card.set_id !== set || rarity && row.badge.label !== rarity ||
+          type && card.card_type !== type || color && !hasColor(card, color)) continue;
+      let score = 0;
+      if (query) {
+        if (code === row.number) score = 4;
+        else if (query === row.name) score = 3;
+        else if (row.name.startsWith(query) || row.number.startsWith(code)) score = 2;
+        else if (tokens.every(token => row.terms.includes(token))) score = 1;
+        else continue;
+      }
+      matches.push({ row, score });
+    }
+    matches.sort((a, b) => {
+      const first = a.row.card;
+      const second = b.row.card;
+      const byName = () => first.card_name.localeCompare(second.card_name) ||
+        a.row.number.localeCompare(b.row.number);
+      if (sort === 'name') return byName();
+      if (sort === 'match' && a.score !== b.score) return b.score - a.score;
+      const priceA = first.market_price || 0;
+      const priceB = second.market_price || 0;
+      if (!priceA || !priceB) return Number(!!priceB) - Number(!!priceA) || byName();
+      return (sort === 'price-low' ? priceA - priceB : priceB - priceA) || byName();
+    });
+    const count = [set, rarity, type, color].filter(Boolean).length;
+    $('#catalog-filter-count').textContent = count ? '(' + count + ')' : '';
+    $('#catalog-count').textContent = matches.length
+      ? `${Math.min(catalogLimit, matches.length).toLocaleString()} of ${matches.length.toLocaleString()} printings`
+      : 'No matching cards';
+    const grid = $('#catalog-grid');
+    const start = append ? grid.children.length : 0;
+    const markup = matches.slice(start, catalogLimit).map(({ row }) => {
+      const { card, badge } = row;
+      return `<button class="catalog-tile" type="button" data-key="${esc(E.cardKey(card))}">
+        ${cardArt(card, 'catalog-art')}
+        <span class="catalog-tile-body">
+          <strong>${esc(card.card_name)}</strong>
+        <span class="catalog-tile-meta">${esc(card.card_set_id || card.set_id)} · ${esc(badge.label)}</span>
+        <span class="catalog-tile-meta">${esc(card.set_name || setName(card.set_id))}</span>
+          <span class="catalog-tile-price">${catalogPrice(card.market_price)}</span>
+        </span>
+      </button>`;
+    }).join('');
+    if (append) {
+      grid.insertAdjacentHTML('beforeend', markup);
+      grid.children[start]?.focus();
+    } else grid.innerHTML = markup;
+    $('#catalog-more').hidden = matches.length <= catalogLimit;
+  }
+
+  function renderCatalogCard() {
+    const card = S.byKey[catalogCardKey];
+    if (!card) {
+      $('#catalog-dialog').close();
+      return;
+    }
+    const badge = E.rarityBadge(card);
+    const printings = card.printing == null ? null :
+      [card.printing, ...(card.alt_printing ? [card.alt_printing.printing] : [])];
+    $('#catalog-card').innerHTML = `<div class="catalog-detail">
+      <div class="catalog-art">${cardArt(card)}</div>
+      <div>
+        <div class="small muted">${esc(card.card_set_id || card.set_id)} · ${esc(badge.label)}</div>
+        <h2 id="catalog-card-title">${esc(card.card_name)}</h2>
+        <p class="small muted">${esc(card.set_name || setName(card.set_id))}</p>
+        <dl class="catalog-quotes">
+          <div><dt>TCGplayer Market Price</dt><dd id="catalog-detail-market"></dd></div>
+          <div><dt>Lowest listing</dt><dd id="catalog-detail-low"></dd></div>
+        </dl>
+        <p class="small muted">${esc(catalogDate())}</p>
+        ${card.buy_url ? `<a href="${esc(card.buy_url)}" target="_blank" rel="noopener noreferrer">View on TCGplayer</a>` : ''}
+        ${isPullable(catalogCardKey) ? '<button class="btn" id="catalog-rip" type="button">Rip vs Buy</button>' : ''}
+      </div>
+    </div>`;
+    renderCatalogQuotes(card);
+    const historyKey = JSON.stringify([catalogCardKey, printings, S.fetchedAt]);
+    if (catalogHistoryKey !== historyKey) {
+      catalogHistoryKey = historyKey;
+      $('#catalog-market').textContent = printings ? 'Loading market analysis…' : '';
+      if (printings) {
+        showPriceHistory($('#catalog-history'), card.id, printings, series => {
+          catalogPrinting = series.printing;
+          renderCatalogQuotes(card);
+          renderCardMarket(series);
+          renderCatalogOwnership();
+        }, catalogPrinting);
+      } else $('#catalog-history').textContent = 'Refresh card data to identify the printing for this chart.';
+    }
+    catalogOptions($('#catalog-binder'), C.live(S.cols).map(col => [col.id, col.name]));
+    const rip = $('#catalog-rip');
+    if (rip) rip.addEventListener('click', () => {
+      S.ripSet = card.set_id;
+      S.ripCard = catalogCardKey;
+      S.ripSearch = '';
+      S.ripRarity = S.ripColor = 'all';
+      $('#rip-search').value = '';
+      $('#catalog-dialog').close();
+      switchTab('rip');
+    });
+    renderCatalogOwnership();
+  }
+
+  function renderCatalogQuotes(card) {
+    const alt = catalogPrinting === card.alt_printing?.printing ? card.alt_printing : null;
+    $('#catalog-detail-market').textContent = catalogPrice(alt ? alt.market : card.market_price);
+    $('#catalog-detail-low').textContent = catalogPrice(alt ? alt.low : card.inventory_price);
+  }
+
+  function openCatalogCard(key, printing) {
+    if (!S.byKey[key]) return;
+    catalogCardKey = key;
+    catalogPrinting = printing;
+    catalogHistoryKey = null;
+    $('#catalog-quantity').value = '1';
+    renderCatalogCard();
+    $('#catalog-dialog').showModal();
+  }
+
+  function renderCardMarket({ printing, points }) {
+    const host = $('#catalog-market');
+    const call = OQ_MARKET.analyze(points, Math.floor(Date.now() / 86400000));
+    const money = cents => E.money(cents / 100, 2);
+    const last = points.at(-1);
+    const date = last ? new Date(last[0] * 86400000).toLocaleDateString(undefined, {
+      month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC'
+    }) : '';
+    const range = values => values.map(money).join(' – ');
+    const pct = value => (value > 0 ? '+' : '') + E.pct(value);
+    host.innerHTML = `
+      <div class="history-toolbar">
+        <h3>Market analysis${printing ? ' · ' + esc(printing) : ''}</h3>
+        <strong class="market-call" data-call="${esc(call.call)}">${esc(call.call)}</strong>
+      </div>
+      <p class="small">${esc(call.reason)}</p>
+      ${date ? `<p class="small muted">Latest recorded quote · ${esc(date)}</p>` : ''}
+      ${call.market ? `
+        <dl class="market-evidence">
+          <div><dt>Analyzed Market Price</dt><dd>${money(call.market)}</dd></div>
+          <div><dt>Analyzed lowest listing</dt><dd>${money(call.low)}</dd></div>
+          <div><dt>30-day momentum</dt><dd>${pct(call.momentum)}</dd></div>
+          <div><dt>Lowest listing vs. market</dt><dd>${pct(call.low / call.market - 1)}</dd></div>
+          <div><dt>Typical 90-day range</dt><dd>${range(call.recentRange)}</dd></div>
+          <div><dt>Typical one-year range</dt><dd>${range(call.year)}</dd></div>
+        </dl>
+        <details class="small market-rules">
+          <summary>What would change the call?</summary>
+          <p>Buy at a market price of ${money(call.buyPrice)} or less with momentum of +5% or higher and a listing 5% to 50% below market. At the latest market price, the maximum qualifying listing is ${money(call.buyListing)}.</p>
+          <p>Sell at a market price of ${money(call.sellPrice)} or more with momentum of −5% or lower and a listing between 10% below and 25% above market. At the latest market price, the minimum qualifying listing is ${money(call.sellListing)}.</p>
+          <p class="muted">Calls require a market price of at least $10 and distinct buy and sell thresholds. The ranges show the 10th–90th percentiles of observed prices. Momentum compares two seven-day medians about a month apart. Buy calls flag potential collection purchases. Sale volume and time to sell are unavailable.</p>
+        </details>` : ''}
+      ${last ? `
+        <details class="small market-rules"${call.call === 'Sell Now' ? ' open' : ''}>
+          <summary>Estimate sale proceeds</summary>
+          <div class="market-evidence">
+            <label class="fld"><span>Sale price ($)</span><input data-sale type="number" min="0.01" step="0.01" value="${(last[1] / 100).toFixed(2)}"></label>
+            <label class="fld"><span>Your shipping cost ($)</span><input data-shipping type="number" min="0" step="0.01" value="${(OQ_MARKET.defaultShipping / 100).toFixed(2)}"></label>
+          </div>
+          <p>Estimated net <strong data-net aria-live="polite"></strong></p>
+          <p class="muted">One US Marketplace Level 1–4 sale with seller-paid shipping, before buyer tax. <a href="https://help.tcgplayer.com/hc/en-us/articles/201357836-TCGplayer-Fees" target="_blank" rel="noopener noreferrer">TCGplayer fee schedule</a></p>
+        </details>` : ''}
+      <p class="small muted">Preliminary signals based on TCGplayer price snapshots. <a href="MARKET-BACKTEST.md" target="_blank" rel="noopener noreferrer">Backtest results</a></p>`;
+    if (!last) return;
+    const sale = host.querySelector('[data-sale]');
+    const shipping = host.querySelector('[data-shipping]');
+    const net = host.querySelector('[data-net]');
+    const update = () => {
+      const price = sale.valueAsNumber;
+      const cost = shipping.valueAsNumber;
+      net.textContent = Number.isFinite(price) && price > 0 && Number.isFinite(cost) && cost >= 0
+        ? money(OQ_MARKET.saleProceeds(Math.round(price * 100), Math.round(cost * 100))) : '—';
+    };
+    sale.addEventListener('input', update);
+    shipping.addEventListener('input', update);
+    update();
+  }
+
+  function renderCatalogOwnership(message = '') {
+    const card = S.byKey[catalogCardKey];
+    const alternate = catalogPrinting != null && catalogPrinting !== card?.printing;
+    $('#catalog-add button[type="submit"]').disabled = alternate;
+    if (alternate) {
+      $('#catalog-ownership').textContent = 'Select the catalog printing to add this card. Binders currently track one printing per product.';
+      return;
+    }
+    const binder = $('#catalog-binder').value;
+    const count = C.live(S.items).filter(item => item.colId === binder && item.key === catalogCardKey)
+      .reduce((total, item) => total + Number(item.qty || 0), 0);
+    $('#catalog-ownership').textContent = message || (count
+      ? `${count} in this binder` : 'Add raw near-mint copies. Edit condition, grade, or purchase details in My Collection.');
+  }
+
+  function wireCatalog() {
+    const reset = () => {
+      catalogLimit = CATALOG_PAGE;
+      renderCatalogResults();
+    };
+    on('#catalog-query', 'input', reset);
+    for (const filter of [...catalogFilters, 'sort']) on('#catalog-' + filter, 'change', reset);
+    on('#catalog-clear', 'click', () => {
+      for (const filter of catalogFilters) $('#catalog-' + filter).value = '';
+      reset();
+    });
+    on('#catalog-more', 'click', () => {
+      catalogLimit += CATALOG_PAGE;
+      renderCatalogResults(true);
+    });
+    on('#catalog-grid', 'click', event => {
+      const tile = event.target.closest('button[data-key]');
+      if (!tile) return;
+      openCatalogCard(tile.dataset.key);
+    });
+    on('#catalog-close', 'click', () => $('#catalog-dialog').close());
+    on('#sealed-history-close', 'click', () => $('#sealed-history-dialog').close());
+    on('#catalog-binder', 'change', () => renderCatalogOwnership());
+    on('#catalog-add', 'submit', event => {
+      event.preventDefault();
+      const binder = C.live(S.cols).find(col => col.id === $('#catalog-binder').value);
+      const qty = $('#catalog-quantity').valueAsNumber;
+      const card = S.byKey[catalogCardKey];
+      if (!binder || !card || (catalogPrinting != null && catalogPrinting !== card.printing) ||
+          !Number.isInteger(qty) || qty < 1 || qty > 9999) return;
+      const next = [...S.items, C.newItem(binder.id, catalogCardKey, { qty, src: 'buy' })];
+      if (!saveCritical(KEY.items, next)) {
+        renderCatalogOwnership('Could not save. Free up browser storage and try again.');
+        return;
+      }
+      S.items = next;
+      S.curCol = binder.id;
+      schedulePush();
+      renderCatalogOwnership(`Added ${qty} to ${binder.name}.`);
+      if (S.tab === 'signals' && $('#sig-scope').value === 'owned') renderScannerResults();
+    });
+  }
+
   /* =============================================================== SHELL == */
 
   function switchTab(tab) {
@@ -2584,6 +3126,7 @@
    */
   function renderActive() {
     const fns = {
+      catalog: renderCatalog,
       rip: renderRip, collection: renderCollection,
       sets: renderSets, signals: renderSignals, settings: renderSettings
     };
@@ -2637,6 +3180,7 @@
 
   function wire() {
     $$('#tabs button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+    wireCatalog();
 
     on('#rip-set', 'change', e => {
       S.ripSet = e.target.value; S.ripCard = null; S.gridLimit = 150; renderRip();
@@ -2689,28 +3233,19 @@
       addTimer = setTimeout(() => { S.addSearch = v; renderAddGrid(); }, 180);
     });
 
-    on('#sig-min', 'change', renderSignals);
-    let sigTimer;
-    on('#sig-search', 'input', e => {
-      const v = e.target.value;
-      // Debounced like the rip search: 333 rows re-rank on every keystroke.
-      clearTimeout(sigTimer);
-      sigTimer = setTimeout(() => { S.sigSearch = v; renderSignals(); }, 180);
-    });
-    on('#sig-rarity', 'change', e => { S.sigRarity = e.target.value; renderSignals(); });
-    on('#sig-colour', 'change', e => { S.sigColor = e.target.value; renderSignals(); });
+    wireSignals();
 
     $$('#sets-tbl th.sortable').forEach(th => th.addEventListener('click', () => {
       const by = th.dataset.sort;
       S.sort.sets = { by, dir: S.sort.sets.by === by ? -S.sort.sets.dir : -1 };
       renderSets();
     }));
-    $$('#sig-tbl th.sortable').forEach(th => th.addEventListener('click', () => {
-      const by = th.dataset.sort;
-      S.sort.sig = { by, dir: S.sort.sig.by === by ? -S.sort.sig.dir : -1 };
-      renderSignals();
-    }));
-
+    on('#set-analysis-close', 'click', () => $('#set-analysis-dialog').close());
+    on('#set-box-product', 'change', renderSetAnalysis);
+    on('#sets-analysis-retry', 'click', () => {
+      sealedRun = null;
+      renderSets();
+    });
     on('#pr-profile', 'change', renderSettings);
     on('#reset-boxes', 'click', () => {
       S.boxes = {}; S.perCase = {};
@@ -2779,61 +3314,6 @@
     });
     on('#retry', 'click', boot);
   }
-
-  /* Rarity and colour options for Signals, counted against the price floor
-     currently in force so the numbers match what the table will actually show.
-     Each list is counted WITHIN the other's selection, same as Rip vs Buy. */
-  function fillSignalFilters() {
-    const raritySel = $('#sig-rarity'), colourSel = $('#sig-colour');
-    if (!raritySel || !colourSel) return;
-
-    const min = Number(($('#sig-min') || {}).value) || 0;
-    const chaseKeys = ['SEC', 'ALT', 'SP', 'MANGA', 'ULTRA', 'TR'];
-    const pool = [];
-    for (const s of liveSets()) {
-      for (const e of indexFor(s.id).all) {
-        if (e.price < min) break;
-        pool.push(e);
-      }
-    }
-
-    const slot = S.sigRarity || 'all', colr = S.sigColor || 'all';
-
-    const forRarity = colr === 'all' ? pool : pool.filter(e => hasColor(e.card, colr));
-    const rCounts = {};
-    for (const e of forRarity) rCounts[e.slot] = (rCounts[e.slot] || 0) + 1;
-    const chaseCount = chaseKeys.reduce((n, k) => n + (rCounts[k] || 0), 0);
-
-    const rOpts = [`<option value="all">All rarities (${forRarity.length})</option>`];
-    if (chaseCount) rOpts.push(`<option value="chase">Chase only (${chaseCount})</option>`);
-    for (const sl of D.SLOTS) {
-      if (!rCounts[sl.key]) continue;
-      rOpts.push(`<option value="${esc(sl.key)}">${esc(sl.label)} (${rCounts[sl.key]})</option>`);
-    }
-    raritySel.innerHTML = rOpts.join('');
-    raritySel.value = slot;
-    // Raising the price floor can empty a rarity — fall back rather than
-    // showing an empty table with a filter that looks active.
-    if (raritySel.value !== slot) { S.sigRarity = 'all'; raritySel.value = 'all'; }
-
-    const forColour = slot === 'all' ? pool
-      : slot === 'chase' ? pool.filter(e => chaseKeys.indexOf(e.slot) > -1)
-      : pool.filter(e => e.slot === slot);
-    const cCounts = {};
-    for (const e of forColour) {
-      for (const c of D.COLORS) if (hasColor(e.card, c)) cCounts[c] = (cCounts[c] || 0) + 1;
-    }
-    const cOpts = [`<option value="all">All colours (${forColour.length})</option>`];
-    for (const c of D.COLORS) {
-      if (!cCounts[c]) continue;
-      cOpts.push(`<option value="${esc(c)}">${esc(c)} (${cCounts[c]})</option>`);
-    }
-    colourSel.innerHTML = cOpts.join('');
-    colourSel.value = colr;
-    if (colourSel.value !== colr) { S.sigColor = 'all'; colourSel.value = 'all'; }
-  }
-
-  function fillSetPickers() { /* Signals no longer has a set picker. */ }
 
   /* A pending write must not die with the tab. sendBeacon survives unload where
      fetch does not. */
@@ -2905,6 +3385,14 @@
   }
 
   async function boot() {
+    const sharedUpdate = $('#shared-history-update');
+    OQ_HISTORY.sharedStatus().then(stamp => {
+      const date = new Date(stamp).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+      const stale = Date.now() - stamp > 36 * 60 * 60 * 1000;
+      sharedUpdate.textContent = 'Shared price history updated ' + date + (stale ? ' · Update overdue' : '');
+    }).catch(() => {
+      sharedUpdate.textContent = 'Shared price history update time unavailable';
+    });
     $('#boot').classList.remove('hidden');
     $('#boot-error').classList.add('hidden');
     $('#app').classList.add('hidden');
@@ -2926,7 +3414,6 @@
        usable app with an explanation, and you can go and fix the cause. */
     try {
       ensureCollections();
-      fillSetPickers();
       wire();
       flushOnExit();
       setSync(S.syncUrl ? 'ok' : 'off', S.syncUrl ? 'connected' : 'Sheets off');
@@ -2942,7 +3429,7 @@
       const r = await fetchCards(false);
       if (r.fromCache) {
         // Cache is warm — show it instantly, then quietly freshen in the background.
-        fetchCards(true).then(() => { invalidate(); renderActive(); }).catch(() => {});
+        refreshCachedCards().then(() => { invalidate(); renderActive(); }).catch(() => {});
       }
       collapsePermanent('boot');
       runKeyMigration();
@@ -2950,7 +3437,7 @@
 
       $('#boot').classList.add('hidden');
       $('#app').classList.remove('hidden');
-      switchTab('rip');
+      switchTab('catalog');
 
       // Sheets is the source of truth across devices, so reconcile on every
       // load. Render first so a slow sheet never blocks the app.

@@ -30,7 +30,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>OPTCG Quant — Rip or Buy?</title>
+<title>OPTCG Quant — One Piece Card Search</title>
 
 <!-- Installable app. The service worker is NETWORK-FIRST, so an install never
      pins you to stale code: online you always get the latest, offline you get
@@ -45,7 +45,7 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 
-<link rel="stylesheet" href="styles.css?v=2.13.0">
+<link rel="stylesheet" href="styles.css?v=2.19.0">
 </head>
 <body>
 
@@ -55,15 +55,16 @@
       <div class="brand-mark">Q</div>
       <div class="brand-txt">
         <strong>OPTCG Quant</strong>
-        <span>One Piece TCG · rip or buy</span>
+        <span>One Piece TCG</span>
       </div>
     </div>
 
     <nav class="tabs" id="tabs" role="tablist">
-      <button role="tab" data-tab="rip"        aria-selected="true">Rip vs Buy</button>
+      <button role="tab" data-tab="catalog"    aria-selected="true">Card Search</button>
       <button role="tab" data-tab="collection" aria-selected="false">My Collection</button>
+      <button role="tab" data-tab="rip"        aria-selected="false">Rip vs Buy</button>
       <button role="tab" data-tab="sets"       aria-selected="false">Set Explorer</button>
-      <button role="tab" data-tab="signals"    aria-selected="false">Signals</button>
+      <button role="tab" data-tab="signals"    aria-selected="false">Market Scanner</button>
       <button role="tab" data-tab="settings"   aria-selected="false">Settings</button>
     </nav>
 
@@ -95,10 +96,74 @@
   </div>
 
   <main id="app" class="hidden">
+    <p id="shared-history-update" class="small muted" role="status"></p>
     <div id="render-error" class="hidden"></div>
 
+    <section class="view catalog" data-view="catalog" aria-labelledby="catalog-title">
+      <div class="catalog-head">
+        <h1 id="catalog-title">Card Search</h1>
+        <div class="small muted" id="catalog-date"></div>
+      </div>
+      <label class="catalog-search">
+        <span>Search the English card catalog</span>
+        <input id="catalog-query" type="search" placeholder="Search by name or card number" autocomplete="off" spellcheck="false">
+      </label>
+      <details class="catalog-filters">
+        <summary>Filters <span id="catalog-filter-count"></span></summary>
+        <div class="catalog-filter-grid">
+          <label class="fld"><span>Set</span><select id="catalog-set"></select></label>
+          <label class="fld"><span>Rarity / variant</span><select id="catalog-rarity"></select></label>
+          <label class="fld"><span>Card type</span><select id="catalog-type"></select></label>
+          <label class="fld"><span>Colour</span><select id="catalog-color"></select></label>
+          <button class="btn" id="catalog-clear" type="button">Clear filters</button>
+        </div>
+      </details>
+      <div class="catalog-toolbar">
+        <p id="catalog-count" role="status"></p>
+        <label>Sort <select id="catalog-sort">
+          <option value="match">Best match</option>
+          <option value="price-high">Price: high to low</option>
+          <option value="price-low">Price: low to high</option>
+          <option value="name">Card name</option>
+        </select></label>
+      </div>
+      <div class="catalog-grid" id="catalog-grid"></div>
+      <button class="btn catalog-more" id="catalog-more" type="button" hidden>Show more cards</button>
+    </section>
+
+    <dialog class="catalog-dialog" id="catalog-dialog" aria-labelledby="catalog-card-title">
+      <div class="catalog-dialog-top">
+        <button class="btn" id="catalog-close" type="button" autofocus>Close</button>
+      </div>
+      <div id="catalog-card"></div>
+      <section class="price-history" id="catalog-market" aria-label="Card market analysis"></section>
+      <section class="price-history" id="catalog-history" aria-label="Card price history"></section>
+      <form id="catalog-add">
+        <label class="fld"><span>Binder</span><select id="catalog-binder" required></select></label>
+        <label class="fld"><span>Quantity</span><input id="catalog-quantity" type="number" value="1" min="1" max="9999" step="1" required></label>
+        <button class="btn primary" type="submit">Add to Collection</button>
+      </form>
+      <p class="small muted" id="catalog-ownership" role="status"></p>
+    </dialog>
+    <dialog class="catalog-dialog" id="set-analysis-dialog" aria-labelledby="set-analysis-title">
+      <div class="catalog-dialog-top">
+        <button class="btn" id="set-analysis-close" type="button" autofocus>Close</button>
+      </div>
+      <h2 id="set-analysis-title"></h2>
+      <label class="fld" id="set-box-picker"><span>Booster box printing</span><select id="set-box-product"></select></label>
+      <div id="set-analysis-body"></div>
+      <section class="price-history" id="set-analysis-chart" aria-label="Booster box price history"></section>
+    </dialog>
+    <dialog class="catalog-dialog" id="sealed-history-dialog" aria-labelledby="sealed-history-title">
+      <div class="catalog-dialog-top">
+        <button class="btn" id="sealed-history-close" type="button" autofocus>Close</button>
+      </div>
+      <h2 id="sealed-history-title"></h2>
+      <section class="price-history" id="sealed-history-chart" aria-label="Sealed price history"></section>
+    </dialog>
+
     <!-- ================================================== RIP vs BUY ==== -->
-    <section class="view" data-view="rip">
+    <section class="view hidden" data-view="rip">
       <div class="grid g-side">
 
         <div class="panel">
@@ -240,14 +305,21 @@
     <section class="view hidden" data-view="sets">
       <div class="panel" style="margin-bottom:18px">
         <div class="panel-h">
-          <h2>Every set, ranked</h2>
+          <h2>Set Explorer</h2>
           <span class="small muted" style="margin-left:auto" id="sets-sub"></span>
+        </div>
+        <div class="panel-b small">
+          Select a sealed call for box analysis or a set name for Rip vs Buy.
+          The sealed call starts with the lowest-listed box in the catalog. Box price and return use your opening-model settings.
+          <span id="sets-analysis-status" role="status"></span>
+          <button class="btn small" id="sets-analysis-retry" type="button" hidden>Retry analysis</button>
         </div>
         <div class="tbl-scroll">
           <table class="tbl" id="sets-tbl">
             <thead>
               <tr>
                 <th class="sortable" data-sort="name">Set</th>
+                <th>Sealed call</th>
                 <th class="sortable num" data-sort="box">Box price</th>
                 <th class="sortable num" data-sort="case_" title="TCGplayer market price for a sealed case. Blank when no case is listed.">Case</th>
                 <th class="sortable num" data-sort="evBox">EV / box</th>
@@ -275,70 +347,34 @@
       </div>
     </section>
 
-    <!-- ===================================================== SIGNALS ==== -->
-    <section class="view hidden" data-view="signals">
-      <div class="grid g-4" id="sig-stats" style="margin-bottom:18px"></div>
-      <div class="panel">
-        <div class="panel-h">
-          <h2>Supply signal — cheap copies drying up</h2>
-          <select id="sig-min" style="width:auto;margin-left:auto">
-            <option value="20">$20+</option>
-            <option value="50" selected>$50+</option>
-            <option value="100">$100+</option>
-            <option value="250">$250+</option>
-          </select>
-        </div>
-        <!-- Same filter row as Rip vs Buy: search first, then rarity and
-             colour. Replaces the old scope and set dropdowns. -->
-        <div class="panel-b" style="padding-bottom:0">
-          <label class="fld" style="margin-bottom:10px">
-            <span>Search</span>
-            <input type="search" id="sig-search" placeholder="Shanks, Zoro, OP01-120…" autocomplete="off">
-          </label>
-          <div class="grid g-2 filter-2up" style="gap:10px">
-            <label class="fld" style="margin-bottom:13px">
-              <span>Rarity</span>
-              <select id="sig-rarity"></select>
-            </label>
-            <label class="fld" style="margin-bottom:13px">
-              <span>Colour</span>
-              <select id="sig-colour"></select>
-            </label>
-          </div>
-        </div>
-        <div class="panel-b" style="padding-bottom:0">
-          <div class="note small" id="sig-legend"></div>
-        </div>
-        <div class="tbl-scroll">
-          <table class="tbl" id="sig-tbl">
-            <thead>
-              <tr>
-                <th>Card</th>
-                <th>Set</th>
-                <th class="sortable num" data-sort="market">Market</th>
-                <th class="sortable num" data-sort="inv" title="Cheapest copy listed right now">Floor</th>
-                <th class="sortable num" data-sort="mid" title="Middle of the listings. A floor far below this is one seller, not real supply.">Mid</th>
-                <th class="sortable num" data-sort="ratio">Floor / market</th>
-                <th class="sortable num" data-sort="score">Supply</th>
-                <th class="sortable num" data-sort="rank">Call</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
+    <section class="view hidden market-scanner" data-view="signals" aria-labelledby="sig-title">
+      <h1 id="sig-title">Market Scanner</h1>
+      <div class="scanner-filters">
+        <label class="fld"><span>Scope</span><select id="sig-scope">
+          <option value="all">All Cards</option><option value="owned">My Collection</option>
+        </select></label>
+        <label class="fld"><span>Call</span><select id="sig-call">
+          <option value="">All calls</option><option>Buy Now</option><option>Sell Now</option>
+          <option>Hold</option><option>Insufficient data</option>
+        </select></label>
+        <label class="fld"><span>Search</span><input type="search" id="sig-search" placeholder="Name or card number"></label>
+        <label class="fld"><span>Set</span><select id="sig-set"><option value="">All sets</option></select></label>
+        <label class="fld"><span>Rarity / variant</span><select id="sig-rarity"><option value="">All rarities</option></select></label>
+        <label class="fld"><span>Minimum market price ($)</span><input id="sig-min" type="number" min="0" step="0.01" placeholder="0"></label>
+        <label class="fld"><span>Maximum market price ($)</span><input id="sig-max" type="number" min="0" step="0.01" placeholder="Any"></label>
       </div>
-      <div class="note small" style="margin-top:18px">
-        There is no free eBay listing-count or PSA population feed, so this is not TCGQuant's exact input.
-        What every card does have is a <strong>lowest listing</strong> and a <strong>recent sold average</strong>.
-        A <strong>BARGAIN</strong> is a card listed in the cheapest 10% for its own price range — you can buy it
-        meaningfully under what it has been selling for. Thresholds are per price band, measured live from the
-        catalogue, because the floor-to-market ratio climbs with price: among $500+ cards the median is already
-        listed <em>above</em> market, so one fixed cut-off would just select expensive cards.
-        A floor above market is <em>not</em> bullish on its own — market price is a lagging sold average, so it
-        can mean one overpriced listing on a card nobody trades. TCGplayer publishes no price history, so nothing
-        here confirms which way a price is moving. Check the <strong>Mid</strong> column too: a floor far below it
-        is a single cheap seller, which may simply be a damaged copy.
+      <div class="scanner-toolbar">
+        <p id="sig-status" class="small muted" role="status"></p>
+        <button id="sig-retry" class="btn" type="button" hidden>Scan again</button>
       </div>
+      <div id="sig-counts" class="scanner-counts"></div>
+      <div id="sig-results" class="scanner-results"></div>
+      <button id="sig-more" class="btn" type="button" hidden>Show more cards</button>
+      <details class="market-rules scanner-tracking">
+        <summary>Track signal performance</summary>
+        <p class="small muted">Saves Buy and Sell calls from successful live-feed scans in this browser. Checks the exact 30- and 90-day market quotes on future scans.</p>
+        <div id="sig-tracking" class="small muted"></div>
+      </details>
     </section>
 
     <!-- ==================================================== SETTINGS ==== -->
@@ -455,7 +491,9 @@ if ('serviceWorker' in navigator) {
 <script src="data.js?v=2.13.0"></script>
 <script src="engine.js?v=2.13.0"></script>
 <script src="collection.js?v=2.13.0"></script>
-<script src="source.js?v=2.13.0"></script>
-<script src="app.js?v=2.13.0"></script>
+<script src="source.js?v=2.15.0"></script>
+<script src="price-history.js?v=2.19.0"></script>
+<script src="market-analysis.js?v=2.18.0"></script>
+<script src="app.js?v=2.19.0"></script>
 </body>
 </html>
