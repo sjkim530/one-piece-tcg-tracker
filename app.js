@@ -1861,12 +1861,10 @@
 
   /* ---- data source ------------------------------------------------------ */
 
-  const DATA_URL_KEY = 'optcg.dataUrl';
-
   function renderDataSource() {
     const input = $('#data-url');
     if (!input) return;
-    input.value = localStorage.getItem(DATA_URL_KEY) || '';
+    input.value = SRC.configuredBase();
     if (SRC.defaultBase !== './mockapi') input.placeholder = SRC.defaultBase;
 
     const state = $('#src-state');
@@ -4023,8 +4021,8 @@
       const candidate = url || SRC.defaultBase;
       if (candidate !== './mockapi' && !(await testDataSource(candidate))) return;
 
-      if (url) localStorage.setItem(DATA_URL_KEY, url);
-      else localStorage.removeItem(DATA_URL_KEY);
+      if (url) localStorage.setItem(SRC.dataUrlKey, url);
+      else localStorage.removeItem(SRC.dataUrlKey);
       msg.textContent = 'Saved. Reloading card data…';
       try {
         // The cached rows came from the old source; force a full refetch.

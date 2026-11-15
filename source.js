@@ -84,12 +84,17 @@ window.SRC = (function () {
      routes exactly, so the app is fully usable before the Worker exists. */
   const defaultBase = location.protocol === 'https:' && location.hostname !== 'localhost'
     ? 'https://optcg-quant-data.gomu-gomu-santoryu.workers.dev' : './mockapi';
+  const dataUrlKey = 'optcg.dataUrl';
+  const retiredWorker = 'https://optcg-quant-data.seongjinkimsjk.workers.dev';
 
-  function base() {
-    const override = (localStorage.getItem('optcg.dataUrl') || '').trim();
-    return override ? override.replace(/\/+$/, '') : defaultBase;
+  function configuredBase() {
+    const override = (localStorage.getItem(dataUrlKey) || '').trim().replace(/\/+$/, '');
+    if (override.toLowerCase() !== retiredWorker) return override;
+    localStorage.removeItem(dataUrlKey);
+    return '';
   }
 
+  function base() { return configuredBase() || defaultBase; }
   function isMock() { return base() === './mockapi'; }
 
   async function get(path) {
@@ -391,6 +396,6 @@ window.SRC = (function () {
   return {
     parseCsv, loadSet, loadAll, loadGroups, loadUpdated, buildSets, classifyGroup,
     toCard, toProduct, productKind, bigImage, isCard, isDon, donVariant,
-    base, defaultBase, isMock, PROMO_SET
+    base, configuredBase, defaultBase, dataUrlKey, isMock, PROMO_SET
   };
 })();
