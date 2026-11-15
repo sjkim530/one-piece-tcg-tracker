@@ -24,18 +24,17 @@ const OQ_SCAN = (() => {
 
   function readNumbers(text) {
     const numbers = new Set();
-    const pattern = /\b([O0]P|ST|EB|PRB|P)\s*[-–]?\s*([0-9OIL]{2,3})(?:[\s\-–]+([0-9OIL]{3}))?\b/gi;
+    const separator = String.raw`[ \t]*[-–—:·.]?[ \t]*`;
+    // OCR can join the rarity box or block icon to the three-digit serial.
+    // A misread rarity box can look like M immediately before the round icon.
+    const end = String.raw`(?=$|[^A-Z\d]|(?:SEC|SR|SP|TR|UC|PR|[CRL])?[0-9OIL]?\b|M(?=[ \t]+[©®○◯]))`;
+    const numbered = new RegExp(String.raw`\b([O0]P|ST|EB|PRB)${separator}([0-9OIL]{2})${separator}([0-9OIL]{3})${end}`, 'gi');
+    const promos = new RegExp(String.raw`\bP${separator}([0-9OIL]{3})${end}`, 'gi');
     const digits = value => value.toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1');
-    for (const [, rawPrefix, first, last] of text.matchAll(pattern)) {
-      const prefix = rawPrefix.toUpperCase().replace(/^0/, 'O');
-      if (prefix === 'P') {
-        if (first.length === 3) numbers.add('P' + digits(first));
-      } else if (last && first.length === 2) numbers.add(prefix + digits(first) + digits(last));
+    for (const [, prefix, set, number] of text.matchAll(numbered)) {
+      numbers.add(prefix.toUpperCase().replace(/^0/, 'O') + digits(set + number));
     }
-    // OCR sometimes drops the separator entirely.
-    for (const [, prefix, suffix] of text.toUpperCase().matchAll(/\b([O0]P|ST|EB|PRB)([0-9OIL]{5})\b/g)) {
-      numbers.add(prefix.replace(/^0/, 'O') + digits(suffix));
-    }
+    for (const [, number] of text.matchAll(promos)) numbers.add('P' + digits(number));
     return [...numbers];
   }
 
@@ -100,7 +99,19 @@ const OQ_SCAN = (() => {
     return false;
   }
 
-  async function recognize(frame, signal, progress) {
+  function boostNumberContrast(canvas) {
+    const ctx = canvas.getContext('2d');
+    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const { data } = image;
+    for (let i = 0; i < data.length; i += 4) {
+      const light = .299 * data[i] + .587 * data[i + 1] + .114 * data[i + 2];
+      const gray = 255 - Math.max(0, Math.min(255, (light - 95) * 2.2));
+      data[i] = data[i + 1] = data[i + 2] = gray;
+    }
+    ctx.putImageData(image, 0, 0);
+  }
+
+  async function recognize(frame, signal, progress, { photo = false, knownNumbers } = {}) {
     let worker;
     let timer;
     let abort;
@@ -127,18 +138,45 @@ const OQ_SCAN = (() => {
           else resolve(instance);
         }, reject);
       }));
-      const scale = Math.min(2, Math.max(1, 1400 / frame.width));
-      const corner = picture(frame, frame, [.39, .62, .61, .38], scale);
-      try {
-        const { data } = await race(worker.recognize(corner, { tessedit_pageseg_mode: '11' }));
-        let numbers = readNumbers(data.text);
-        if (!numbers.length) {
-          const full = await race(worker.recognize(frame, { tessedit_pageseg_mode: '11' }));
-          numbers = readNumbers(full.data.text);
+      const footer = [.52, .84, .47, .155];
+      const portraitPhoto = [.58, .745, .27, .08];
+      const broadCorner = [.38, .63, .61, .36];
+      const crops = photo ? [portraitPhoto, footer, broadCorner] : [footer, broadCorner];
+      async function match(canvas) {
+        const { data } = await race(worker.recognize(canvas, { tessedit_pageseg_mode: '11' }));
+        const numbers = readNumbers(data.text).filter(number => !knownNumbers || knownNumbers.has(number));
+        return { numbers, starred: /[★☆✦]/u.test(data.text) };
+      }
+      function finish(result) {
+        if (result.starred || !result.numbers.length) return result;
+        if (!photo) return { ...result, starred: hasStar(frame) };
+        const sample = picture(frame, frame, [0, 0, 1, 1], Math.min(1, 1600 / Math.max(frame.width, frame.height)));
+        try {
+          return { ...result, starred: hasStar(sample) };
+        } finally {
+          sample.width = sample.height = 0;
         }
-        return { numbers, starred: numbers.length > 0 && (/[★☆✦]/u.test(data.text) || hasStar(frame)) };
+      }
+      for (const [i, region] of crops.entries()) {
+        const scale = Math.min(3, 1050 / (frame.width * region[2]));
+        const crop = picture(frame, frame, region, scale);
+        try {
+          const result = await match(crop);
+          if (result.numbers.length) return finish(result);
+          if (i < crops.length - 1) {
+            boostNumberContrast(crop);
+            const enhanced = await match(crop);
+            if (enhanced.numbers.length) return finish(enhanced);
+          }
+        } finally {
+          crop.width = crop.height = 0;
+        }
+      }
+      const full = picture(frame, frame, [0, 0, 1, 1], Math.min(1, 1800 / Math.max(frame.width, frame.height)));
+      try {
+        return finish(await match(full));
       } finally {
-        corner.width = corner.height = 0;
+        full.width = full.height = 0;
       }
     } finally {
       stopped = true;

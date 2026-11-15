@@ -60,6 +60,7 @@
 <script src="engine.js?v=1.18.1"></script>
 <script src="collection.js?v=1.18.1"></script>
 <script src="backup.js"></script>
+<script src="card-scan.js"></script>
 <script>
 (function (D, E, C) {
   'use strict';
@@ -831,6 +832,16 @@
     const deck = C.newItem('c1', 'ST-01|ST01-001|Luffy', { qty: 1, value: 5, src: 'pull' });
     const sb = C.scoreboard([], [deck], () => null, s => s, isBooster, setIdOf);
     eq(sb.rows.length, 0);
+  });
+
+  describe('card number OCR');
+  it('extracts card numbers next to misread block icons and rarity labels', () => {
+    eq(OQ_SCAN.readNumbers('0P16-021 0 ©\nOP16-0950 ©\nOP16-095m ©\nOP01-120SEC5'), ['OP16021', 'OP16095', 'OP01120']);
+  });
+  it('handles separators and typical OCR substitutions while rejecting unrelated suffixes', () => {
+    eq(OQ_SCAN.readNumbers('OP I6:O2I\nEB02001\nST-02-008\nPRB01-003\nP-078\nOP16-021M0'), [
+      'OP16021', 'EB02001', 'ST02008', 'PRB01003', 'P078'
+    ]);
   });
 
   describe('collection backup');

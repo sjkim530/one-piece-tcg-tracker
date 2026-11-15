@@ -3626,7 +3626,7 @@
     }
 
     let recognized = [];
-    async function scan(makeFrame) {
+    async function scan(makeFrame, photo = false) {
       job?.abort();
       const task = job = new AbortController();
       let frame;
@@ -3638,9 +3638,10 @@
       try {
         frame = await makeFrame();
         if (task.signal.aborted) return;
+        const knownNumbers = new Set(S.cards.map(card => OQ_SCAN.normalize(card.card_set_id)));
         const result = await OQ_SCAN.recognize(frame, task.signal, stage => {
           status.textContent = stage === 'recognizing text' ? 'Reading card number…' : 'Loading the scanner…';
-        });
+        }, { photo, knownNumbers });
         if (task.signal.aborted) return;
         recognized = result.numbers;
         number.value = recognized[0] || '';
@@ -3749,9 +3750,9 @@
       scan(async () => {
         const bitmap = await createImageBitmap(photo);
         try {
-          return OQ_SCAN.picture(bitmap, bitmap, [0, 0, 1, 1], Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height)));
+          return OQ_SCAN.picture(bitmap, bitmap, [0, 0, 1, 1], Math.min(1, 2800 / Math.max(bitmap.width, bitmap.height)));
         } finally { bitmap.close(); }
-      });
+      }, true);
     });
     on('#scan-lookup', 'submit', event => {
       event.preventDefault();
