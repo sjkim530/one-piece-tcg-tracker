@@ -24,7 +24,9 @@ library.
 
 Publish `price-history.js` and the generated `price-history/` directory with the
 site. Each chart loads one small file for the selected TCGplayer product.
-The existing Worker serves current quotes. On app opens and refreshes, the
+The hosted app defaults to the existing Grand Line Vault Worker. Settings can
+override the URL per browser. Local HTTP development defaults to the sample
+catalog. On app opens and refreshes, the
 browser saves the dated quotes in IndexedDB. These snapshots belong to that
 browser and cover days when it successfully loads the feed.
 Market Scanner also stores Buy and Sell calls from complete live-feed scans in
@@ -49,14 +51,12 @@ header, and their docs say plainly it is meant for back-end use. So there are
 now two things to deploy: the site, and a small Cloudflare Worker that fetches
 on the site's behalf.
 
-Neither holds a secret. The Worker proxies public data and has no key; the
-Apps Script `/exec` URL and the Worker URL both live in your browser's
-localStorage and are never written to source.
+The Worker proxies public data and has no key. Custom Worker URLs are saved
+in browser storage. The app stores collection backups in a file you choose.
 
 ## 1. The Worker
 
-You have no Node installed, so use Cloudflare's **web editor** rather than the
-CLI — same paste-and-save flow as your Apps Script.
+You can configure the Worker in Cloudflare's **web editor**.
 
 1. Sign up at [dash.cloudflare.com](https://dash.cloudflare.com) (free plan is
    enough — see "Why the Worker is dumb" below).
@@ -104,13 +104,14 @@ Commit everything in this folder **except** `mockapi/`, plus `icons/`.
 | `styles.css` | All styling. |
 | `data.js` | Sets, group ids, pull-rate profiles, colours, variant tags. |
 | `engine.js` | Classification, EV, odds, signals. Pure functions. |
-| `collection.js` | Collection model, value maths, Sheets transport, key migration. |
+| `collection.js` | Collection model, value maths, key migration. |
 | `source.js` | Fetches and parses TCGCSV through the Worker. **New in v2.** |
 | `price-history.js` | Loads price charts and saves dated snapshots. |
 | `market-analysis.js` | Evaluates card price signals and estimates sale proceeds. |
 | `MARKET-BACKTEST.md` | Summarizes the card signal backtest and assumptions. |
 | `price-history/` | Generated historical prices for singles and sealed products. |
-| `app.js` | State, rendering, sync. |
+| `app.js` | State, rendering, local persistence. |
+| `backup.js` | Versioned JSON backup, automatic file updates, and restore validation. |
 | `worker/worker.js` | Not served, but you paste it into Cloudflare. Keep it versioned next to the code it feeds. |
 
 ### PWA (4 files + icons)
@@ -134,15 +135,17 @@ trusting a change.
   can be built and tested without the Worker. If you publish it, the app will
   silently read stale frozen prices instead of telling you the Worker is
   missing. Add it to `.gitignore`.
-- The Apps Script `/exec` URL, and the Worker URL. Both are pasted at runtime.
+- Personal backup files and any private URLs.
 - `_backups/` lives outside this folder and should stay out of the repo.
 
 ## First run after deploying
 
-1. Open the Pages URL. With no Worker configured it shows a setup message
-   rather than an empty app.
-2. Settings → Data source → paste the Worker URL → Save.
-3. My Collection → Google Sheets → paste the `/exec` URL, once per browser.
+1. Open the Pages URL. Settings → Data source lets you override the default Worker.
+2. On Android Chrome, open Settings → Collection backup → Enable automatic backup
+   and select a file. The app updates that file while it has write permission.
+3. Use Restore from file to load a backup. After moving devices, choose the
+   restored file again to resume automatic updates. Keep an off-device copy
+   if you want to recover after losing the phone.
 
 ### Your collection migrates itself
 
@@ -151,8 +154,7 @@ because optcgapi had nothing unique. v2 keys on TCGplayer's `productId`, which
 genuinely is unique. On the first v2 load, saved rows are repointed
 automatically by matching card name plus card number.
 
-Rows that match exactly one card are migrated and marked dirty so the corrected
-keys reach your sheet on the next push. **Anything that does not match exactly
+Rows that match exactly one card are migrated in browser storage. **Anything that does not match exactly
 one card is left completely alone and reported in a banner on My Collection** —
 nothing is deleted, and nothing is guessed, because a wrong match looks fine
 while pointing at the wrong card. Fix those by re-adding them by hand.

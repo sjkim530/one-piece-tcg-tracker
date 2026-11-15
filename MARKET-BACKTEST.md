@@ -1,5 +1,9 @@
 # Card market backtest
 
+The historical table uses the original rule names. In the app these flags are
+called Buy candidate, Review for sale, and No clear signal. Forward results in
+Market Scanner are collected separately by the daily price job.
+
 The card analysis uses TCGplayer price snapshots from November 13, 2025 through
 November 12, 2026. The backtest evaluates every eligible Monday for printings
 matched to the local singles catalog. Each decision uses only quotes available

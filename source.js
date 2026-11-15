@@ -82,9 +82,12 @@ window.SRC = (function () {
 
      Falls back to the on-disk snapshot in mockapi/, which mirrors the Worker's
      routes exactly, so the app is fully usable before the Worker exists. */
+  const defaultBase = location.protocol === 'https:' && location.hostname !== 'localhost'
+    ? 'https://optcg-quant-data.gomu-gomu-santoryu.workers.dev' : './mockapi';
+
   function base() {
-    const u = (localStorage.getItem('optcg.dataUrl') || '').trim();
-    return u ? u.replace(/\/+$/, '') : './mockapi';
+    const override = (localStorage.getItem('optcg.dataUrl') || '').trim();
+    return override ? override.replace(/\/+$/, '') : defaultBase;
   }
 
   function isMock() { return base() === './mockapi'; }
@@ -145,6 +148,17 @@ window.SRC = (function () {
     return 'DON!!';
   }
 
+  function plainCardText(value) {
+    const text = (value || '').replace(/<br\s*\/?\s*>/gi, '\n')
+      .replace(/<\/p\s*>/gi, '\n').replace(/<[^>]*>/g, '');
+    const entities = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+    return text.replace(/&(?:#(\d+)|#x([\da-f]+)|([a-z]+));/gi, (match, decimal, hex, name) => {
+      if (name) return entities[name.toLowerCase()] ?? match;
+      const code = decimal ? Number(decimal) : parseInt(hex, 16);
+      return code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    }).trim();
+  }
+
   function toCard(row, set) {
     const don = isDon(row);
     if (don) {
@@ -187,6 +201,13 @@ window.SRC = (function () {
       rarity: (row.extRarity || '').trim(),
       card_color: (row.extColor || '').trim(),
       card_type: (row.extCardType || '').trim(),
+      rulesText: plainCardText(row.extDescription),
+      cost: (row.extCost || '').trim(),
+      life: (row.extLife || '').trim(),
+      power: (row.extPower || '').trim(),
+      counter: (row.extCounterplus || '').trim(),
+      subtypes: (row.extSubtypes || '').trim(),
+      attribute: (row.extAttribute || '').trim(),
       card_image: bigImage(row.imageUrl),
       buy_url: row.url || '',
       printing: row.subTypeName || '',
@@ -291,29 +312,11 @@ window.SRC = (function () {
 
   /* ------------------------------------------------------------------ load -- */
 
-  /* One set's worth of data: one HTTP request, one CSV, cards and sealed
-     products separated.
-
-     A product can appear twice, once per printing (Normal and Foil). We keep
-     whichever row actually carries a market price, preferring the priced one,
-     so a card is never shown as $0 because we happened to pick its unpriced
-     printing. */
+  /* Keep the catalog finish stable even when its price disappears. */
   async function loadSet(set) {
     const text = await (await get('/g/' + set.group)).text();
     const rows = parseCsv(text);
 
-    /* One productId, two printings.
-
-       90 products across the catalogue ship as a Normal AND a Foil row under
-       the SAME productId, and both carry a price — often wildly different:
-       Boa Hancock (Sealed Battle 2024 Vol. 2) is $9.27 Normal against $176.58
-       Foil, a 19x spread. This used to keep whichever row appeared first in
-       the CSV, so the price shown was decided by file order.
-
-       Now it is deterministic: Normal wins, because that is the printing
-       people mean by "the card" and the one most likely to be in a binder.
-       The other printing is not discarded — it rides along as `alt` so the
-       card page can show both rather than quietly picking one. */
     const pick = {}, products = {};
     for (const row of rows) {
       if (!row.productId) continue;
@@ -327,13 +330,13 @@ window.SRC = (function () {
       const prevPriced = num(prev.marketPrice) != null;
       const thisPriced = num(row.marketPrice) != null;
 
-      if (thisPriced && !prevPriced) { store[key] = row; continue; }  // priced beats unpriced
-      if (!thisPriced) continue;
-
-      // Both priced: prefer Normal, deterministically.
       const prevNormal = (prev.subTypeName || '') === 'Normal';
       const thisNormal = (row.subTypeName || '') === 'Normal';
-      if (thisNormal && !prevNormal) store[key] = row;
+      if (isC && thisNormal !== prevNormal) {
+        if (thisNormal) store[key] = row;
+      } else if (thisPriced && (!prevPriced || (!isC && thisNormal && !prevNormal))) {
+        store[key] = row;
+      }
     }
 
     // Attach the printing we did not choose, so nothing is silently dropped.
@@ -341,8 +344,7 @@ window.SRC = (function () {
     for (const row of rows) {
       if (!row.productId || !isCard(row)) continue;
       const chosen = pick[row.productId];
-      if (!chosen || chosen === row) continue;
-      if (num(row.marketPrice) == null) continue;
+      if (!chosen || chosen.subTypeName === row.subTypeName) continue;
       alts[row.productId] = { printing: row.subTypeName || '',
                               market: num(row.marketPrice), low: num(row.lowPrice) };
     }
@@ -389,6 +391,6 @@ window.SRC = (function () {
   return {
     parseCsv, loadSet, loadAll, loadGroups, loadUpdated, buildSets, classifyGroup,
     toCard, toProduct, productKind, bigImage, isCard, isDon, donVariant,
-    base, isMock, PROMO_SET
+    base, defaultBase, isMock, PROMO_SET
   };
 })();

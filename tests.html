@@ -59,6 +59,7 @@
 <script src="data.js?v=1.18.1"></script>
 <script src="engine.js?v=1.18.1"></script>
 <script src="collection.js?v=1.18.1"></script>
+<script src="backup.js"></script>
 <script>
 (function (D, E, C) {
   'use strict';
@@ -381,6 +382,29 @@
     const v = C.valueOf([{ id:'a', colId:'c', key:'1', qty:-5, updatedAt:1, deleted:0 }], () => 100);
     eq(v.total, 0);
     eq(v.cards, 0);
+  });
+
+  it('gain uses only copies with both a price and a recorded cost', () => {
+    const rows = [
+      { key: 'priced', qty: 2, paid: '5' },
+      { key: 'missing', qty: 1, paid: 40 },
+      { key: 'priced', qty: 1, paid: '' },
+      { key: 'priced', qty: 1, grader: 'PSA', grade: 10, paid: 20 },
+      { key: 'priced', qty: 1, value: 0, paid: 0 }
+    ];
+    const v = C.valueOf(rows, key => key === 'priced' ? 10 : 0);
+    eq([v.total, v.cost, v.costedCards, v.unpriced], [30, 70, 5, 2]);
+    eq([v.comparableCards, v.gain, v.gainPct], [3, 10, 1]);
+  });
+
+  it('holdings history uses the same quantities on every plotted date', () => {
+    const history = C.holdingHistory([
+      { qty: 2, points: [[1, 100], [2, 120], [10, 130], [11, 150]] },
+      { qty: 3, points: [[2, 200], [11, 210]] },
+      { qty: 4, points: [[2, 500], [3, 800]] },
+      { qty: 1, points: [] }
+    ]);
+    eq(history, { points: [[2, 840], [11, 930]], copies: 5 });
   });
 
   describe('cards stranded on a deleted binder');
@@ -807,6 +831,34 @@
     const deck = C.newItem('c1', 'ST-01|ST01-001|Luffy', { qty: 1, value: 5, src: 'pull' });
     const sb = C.scoreboard([], [deck], () => null, s => s, isBooster, setIdOf);
     eq(sb.rows.length, 0);
+  });
+
+  describe('collection backup');
+  const backupFixture = () => ({
+    cols: [{ id: 'c1', name: 'Collection', kind: 'keep' }],
+    items: [{ id: 'i1', colId: 'c1', key: '123', printing: 'Foil', qty: 2, paid: 10, note: 'First pull' }],
+    opens: [{ id: 'o1', setId: 'OP-16', boxes: 1, cost: 110, date: '2026-11-14' }],
+    watch: [{ key: '123:Foil', id: '123', printing: 'Foil', buy: 1000, sell: null, shipping: 500 }],
+    comps: [{ id: 's1', key: '123:Foil', sold: '2026-11-14', condition: 'NM', price: 1400, shipping: 100 }]
+  });
+
+  it('round-trips holdings, finish, notes, openings, watch targets, and sales', () => {
+    const data = backupFixture();
+    eq(OQ_BACKUP.decode(OQ_BACKUP.encode(data)), data);
+  });
+
+  it('rejects duplicate IDs, incomplete sections, and unknown versions before restore', () => {
+    const backup = JSON.parse(OQ_BACKUP.encode(backupFixture()));
+    const invalid = [
+      { ...backup, version: 2 },
+      { ...backup, data: { ...backup.data, opens: undefined } },
+      { ...backup, data: { ...backup.data, items: [...backup.data.items, ...backup.data.items] } }
+    ];
+    for (const bad of invalid) {
+      let rejected = false;
+      try { OQ_BACKUP.decode(JSON.stringify(bad)); } catch { rejected = true; }
+      ok(rejected);
+    }
   });
 
   /* ----------------------------------------------------------- render --- */

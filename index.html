@@ -30,45 +30,43 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>OPTCG Quant — One Piece Card Search</title>
+<title>Grand Line Vault — One Piece TCG</title>
 
-<!-- Installable app. The service worker is NETWORK-FIRST, so an install never
-     pins you to stale code: online you always get the latest, offline you get
-     the last copy that worked. That is why the ?v= strings below no longer
-     need touching on every deploy. -->
-<link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#0c1322">
+<link rel="manifest" href="manifest.json?v=3.1.0">
+<meta name="theme-color" content="#17213b">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="OPTCG Quant">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-title" content="Grand Line Vault">
+<link rel="apple-touch-icon" href="icons/vault-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/vault-192.png">
 
-<link rel="stylesheet" href="styles.css?v=2.19.0">
+<link rel="stylesheet" href="styles.css?v=3.5.0">
 </head>
 <body>
 
 <header class="top">
   <div class="top-in">
-    <div class="brand">
-      <div class="brand-mark">Q</div>
-      <div class="brand-txt">
-        <strong>OPTCG Quant</strong>
+    <button type="button" class="brand" id="brand-home" aria-label="Grand Line Vault home">
+      <img class="brand-mark" src="icons/vault-192.png" width="44" height="44" alt="">
+      <span class="brand-txt">
+        <strong>Grand Line Vault</strong>
         <span>One Piece TCG</span>
-      </div>
-    </div>
+      </span>
+    </button>
+    <button class="nav-toggle" id="nav-toggle" type="button" aria-controls="tabs" aria-expanded="false">Menu <span aria-hidden="true">☰</span></button>
 
-    <nav class="tabs" id="tabs" role="tablist">
-      <button role="tab" data-tab="catalog"    aria-selected="true">Card Search</button>
-      <button role="tab" data-tab="collection" aria-selected="false">My Collection</button>
-      <button role="tab" data-tab="rip"        aria-selected="false">Rip vs Buy</button>
-      <button role="tab" data-tab="sets"       aria-selected="false">Set Explorer</button>
-      <button role="tab" data-tab="signals"    aria-selected="false">Market Scanner</button>
-      <button role="tab" data-tab="settings"   aria-selected="false">Settings</button>
+    <nav class="tabs" id="tabs" role="tablist" aria-label="Grand Line Vault">
+      <button role="tab" id="tab-catalog" aria-controls="view-catalog" data-tab="catalog" aria-selected="true"><i aria-hidden="true">⌕</i>Card Search</button>
+      <button role="tab" id="tab-collection" aria-controls="view-collection" data-tab="collection" aria-selected="false"><i aria-hidden="true">▤</i>My Collection</button>
+      <button role="tab" id="tab-watchlist" aria-controls="view-watchlist" data-tab="watchlist" aria-selected="false"><i aria-hidden="true">☆</i>Watchlist<span id="watch-tab-count"></span></button>
+      <button role="tab" id="tab-signals" aria-controls="view-signals" data-tab="signals" aria-selected="false"><i aria-hidden="true">↗</i>Market Scanner</button>
+      <button role="tab" id="tab-sets" aria-controls="view-sets" data-tab="sets" aria-selected="false"><i aria-hidden="true">▧</i>Set Explorer</button>
+      <button role="tab" id="tab-rip" aria-controls="view-rip" data-tab="rip" aria-selected="false"><i aria-hidden="true">✦</i>Rip vs Buy</button>
+      <button role="tab" id="tab-settings" aria-controls="view-settings" data-tab="settings" aria-selected="false"><i aria-hidden="true">⚙</i>Settings</button>
     </nav>
 
-    <div class="sync-chip" id="sync-chip" title="Google Sheets sync"></div>
+    <div class="sync-chip" id="backup-chip" title="Collection backup"></div>
   </div>
 </header>
 
@@ -79,7 +77,7 @@
     <div class="spin"></div>
     <div>
       <div id="boot-msg">Loading the One Piece card database…</div>
-      <div class="small muted" style="margin-top:6px">TCGplayer prices via TCGCSV · 84 sets · cached locally after the first load</div>
+      <div class="small muted" style="margin-top:6px">TCGplayer prices via TCGCSV</div>
     </div>
   </div>
 
@@ -96,30 +94,34 @@
   </div>
 
   <main id="app" class="hidden">
-    <p id="shared-history-update" class="small muted" role="status"></p>
     <div id="render-error" class="hidden"></div>
 
-    <section class="view catalog" data-view="catalog" aria-labelledby="catalog-title">
-      <div class="catalog-head">
-        <h1 id="catalog-title">Card Search</h1>
-        <div class="small muted" id="catalog-date"></div>
+    <section class="view catalog" id="view-catalog" role="tabpanel" data-view="catalog" aria-labelledby="tab-catalog">
+      <div class="catalog-banner">
+        <div class="catalog-intro">
+          <h1 id="catalog-title">Explore the<br><em>card catalog.</em></h1>
+          <label class="catalog-search">
+            <span class="visually-hidden">Search by name or card number</span>
+            <input id="catalog-query" type="search" placeholder="Try Shanks, OP01-120, or Blocker" autocomplete="off" spellcheck="false">
+          </label>
+          <button class="btn scan-launch" id="scan-open" type="button">Scan Card</button>
+        </div>
+        <div class="featured-cards" id="featured-cards" aria-label="Featured cards"></div>
       </div>
-      <label class="catalog-search">
-        <span>Search the English card catalog</span>
-        <input id="catalog-query" type="search" placeholder="Search by name or card number" autocomplete="off" spellcheck="false">
-      </label>
-      <details class="catalog-filters">
+      <div class="catalog-browser">
+      <details class="catalog-filters" open>
         <summary>Filters <span id="catalog-filter-count"></span></summary>
         <div class="catalog-filter-grid">
           <label class="fld"><span>Set</span><select id="catalog-set"></select></label>
           <label class="fld"><span>Rarity / variant</span><select id="catalog-rarity"></select></label>
           <label class="fld"><span>Card type</span><select id="catalog-type"></select></label>
-          <label class="fld"><span>Colour</span><select id="catalog-color"></select></label>
+          <label class="fld"><span>Color</span><select id="catalog-color"></select></label>
           <button class="btn" id="catalog-clear" type="button">Clear filters</button>
         </div>
       </details>
+      <div class="catalog-results">
       <div class="catalog-toolbar">
-        <p id="catalog-count" role="status"></p>
+        <div><h2 id="catalog-results-title">Browse cards</h2><p id="catalog-count" role="status"></p></div>
         <label>Sort <select id="catalog-sort">
           <option value="match">Best match</option>
           <option value="price-high">Price: high to low</option>
@@ -127,23 +129,108 @@
           <option value="name">Card name</option>
         </select></label>
       </div>
-      <div class="catalog-grid" id="catalog-grid"></div>
+      <div class="small muted catalog-freshness" id="catalog-date"></div>
+      <div class="catalog-grid" id="catalog-grid" aria-labelledby="catalog-results-title"></div>
       <button class="btn catalog-more" id="catalog-more" type="button" hidden>Show more cards</button>
+      </div>
+      </div>
     </section>
 
+    <dialog class="catalog-dialog" id="scan-dialog" aria-labelledby="scan-title">
+      <div class="history-toolbar"><h2 id="scan-title">Scan Card</h2><button class="btn" id="scan-close" type="button" autofocus>Close</button></div>
+      <p>Frame one upright card and keep its bottom-right corner clear. Photos are processed on this device and discarded after scanning.</p>
+      <div class="scan-actions">
+        <button class="btn primary" id="scan-camera" type="button">Use camera</button>
+        <label class="btn scan-pick">Choose photo<input id="scan-file" type="file" accept="image/*" class="visually-hidden"></label>
+      </div>
+      <div class="scan-viewfinder" id="scan-viewfinder" hidden>
+        <video id="scan-video" autoplay playsinline muted aria-label="Camera preview"></video>
+        <span aria-hidden="true"></span>
+      </div>
+      <button class="btn primary" id="scan-capture" type="button" hidden>Scan photo</button>
+      <p id="scan-status" class="small" role="status"></p>
+      <form id="scan-lookup" class="scan-lookup">
+        <label class="fld"><span>Card number</span><input id="scan-number" type="text" placeholder="OP01-120" autocomplete="off" spellcheck="false" required></label>
+        <button class="btn" type="submit">Find matches</button>
+      </form>
+      <label class="scan-star"><input type="checkbox" id="scan-star"> Prioritize starred printings</label>
+      <div id="scan-results" class="catalog-grid" aria-label="Matching printings"></div>
+    </dialog>
     <dialog class="catalog-dialog" id="catalog-dialog" aria-labelledby="catalog-card-title">
       <div class="catalog-dialog-top">
         <button class="btn" id="catalog-close" type="button" autofocus>Close</button>
       </div>
+      <div class="card-workspace">
+      <div id="catalog-preview"></div>
+      <div class="card-workspace-content">
       <div id="catalog-card"></div>
-      <section class="price-history" id="catalog-market" aria-label="Card market analysis"></section>
-      <section class="price-history" id="catalog-history" aria-label="Card price history"></section>
       <form id="catalog-add">
         <label class="fld"><span>Binder</span><select id="catalog-binder" required></select></label>
         <label class="fld"><span>Quantity</span><input id="catalog-quantity" type="number" value="1" min="1" max="9999" step="1" required></label>
+        <label class="fld" id="catalog-finish-field" hidden><span>Finish</span><select id="catalog-finish"></select></label>
         <button class="btn primary" type="submit">Add to Collection</button>
       </form>
       <p class="small muted" id="catalog-ownership" role="status"></p>
+      <div class="segmented" id="card-sections" role="group" aria-label="Card details">
+        <button type="button" data-card-section="market" aria-pressed="true">Price & analysis</button>
+        <button type="button" data-card-section="gameplay" aria-pressed="false">Gameplay</button>
+        <button type="button" data-card-section="watch" aria-pressed="false">Price targets</button>
+        <button type="button" data-card-section="comps" aria-pressed="false">eBay comps</button>
+      </div>
+      <div data-card-pane="market">
+      <section class="price-history" id="catalog-history" aria-label="Card price history"></section>
+      <section class="price-history" id="catalog-market" aria-label="Card market analysis"></section>
+      <p id="catalog-comp-evidence" class="small muted"></p>
+      </div>
+      <section id="catalog-gameplay" data-card-pane="gameplay" aria-label="Gameplay" hidden></section>
+      <div data-card-pane="watch" hidden>
+      <details class="price-history watch-editor" id="watch-editor" hidden>
+        <summary id="watch-editor-title">Set price targets</summary>
+        <p class="small muted" id="watch-printing"></p>
+        <form id="watch-form">
+          <div class="watch-fields">
+            <label class="fld"><span>Maximum buy listing ($)</span><input name="buy" type="number" min="0.01" max="1000000" step="0.01"></label>
+            <label class="fld"><span>Minimum sell proceeds ($)</span><input name="sell" type="number" min="0.01" max="1000000" step="0.01"></label>
+            <label class="fld"><span>Seller shipping cost ($)</span><input name="shipping" type="number" min="0" max="1000000" step="0.01"></label>
+          </div>
+          <p class="small muted">Buy targets use the lowest listing before shipping and tax. Sell targets estimate proceeds at Market Price after TCGplayer fees and your shipping cost.</p>
+          <button class="btn small" type="submit">Save targets</button>
+          <button class="btn ghost small" type="button" id="watch-remove" hidden>Remove from Watchlist</button>
+        </form>
+        <p class="small" role="status" id="watch-editor-status"></p>
+      </details>
+      </div>
+      <div data-card-pane="comps" hidden>
+      <section class="price-history" id="catalog-comps" aria-labelledby="comps-title" hidden>
+        <div class="history-toolbar">
+          <h3 id="comps-title">eBay sold comps</h3>
+          <a class="btn small" id="comps-search" target="_blank" rel="noopener noreferrer">Search sold listings ↗</a>
+        </div>
+        <p id="comps-printing" class="small muted"></p>
+        <label class="fld comps-group"><span>Compare sales for</span><select id="comps-group"></select></label>
+        <dl class="market-evidence" id="comps-summary"></dl>
+        <details id="comps-entry" class="market-rules">
+          <summary>Log a sale</summary>
+          <p class="small muted">Confirm the artwork, printing, and condition for one English card. Use the actual sale price in USD plus shipping, before tax. For accepted offers, check the price in <a href="https://www.ebay.com/help/selling/selling-tools/terapeak-research-and-SEO?id=4853" target="_blank" rel="noopener noreferrer">eBay Product Research</a>.</p>
+          <form id="comps-add">
+            <div class="comps-fields">
+              <label class="fld"><span>Sold date</span><input name="sold" type="date" required></label>
+              <label class="fld"><span>Sale price ($)</span><input name="price" type="number" min="0.01" max="1000000" step="0.01" required></label>
+              <label class="fld"><span>Shipping ($)</span><input name="shipping" type="number" min="0" max="1000000" step="0.01" required></label>
+              <label class="fld"><span>Condition</span><select name="condition" required></select></label>
+              <label class="fld" hidden><span>Grader</span><select name="grader" disabled></select></label>
+              <label class="fld" hidden><span>Grade</span><input name="grade" type="number" min="1" max="10" step="0.5" disabled></label>
+              <label class="fld comps-url"><span>eBay listing URL (optional)</span><input name="listing" type="url" placeholder="https://www.ebay.com/itm/…"></label>
+            </div>
+            <button class="btn small" type="submit">Save sale</button>
+          </form>
+        </details>
+        <p id="comps-status" class="small" role="status"></p>
+        <ul id="comps-sales" class="comps-sales"></ul>
+      </section>
+      </div>
+      </div>
+      </div>
     </dialog>
     <dialog class="catalog-dialog" id="set-analysis-dialog" aria-labelledby="set-analysis-title">
       <div class="catalog-dialog-top">
@@ -163,7 +250,8 @@
     </dialog>
 
     <!-- ================================================== RIP vs BUY ==== -->
-    <section class="view hidden" data-view="rip">
+    <section class="view hidden" id="view-rip" role="tabpanel" data-view="rip" aria-labelledby="tab-rip">
+      <div class="catalog-head"><h1>Rip vs Buy</h1></div>
       <div class="grid g-side">
 
         <div class="panel">
@@ -211,12 +299,24 @@
     </section>
 
     <!-- ================================================== COLLECTION ==== -->
-    <section class="view hidden" data-view="collection">
+    <section class="view collection-view hidden" id="view-collection" role="tabpanel" data-view="collection" aria-labelledby="tab-collection">
+      <div class="catalog-head">
+        <h1 id="collection-title">My Collection</h1>
+        <button class="btn primary" type="button" id="col-search-catalog">Find cards to add</button>
+      </div>
       <div id="mig-report"></div>
       <div id="stranded-report"></div>
-      <div class="grid g-4" id="col-stats" style="margin-bottom:18px"></div>
+      <div class="collection-overview">
+      <div id="col-stats" class="collection-stats"></div>
+      <section class="panel collection-history" aria-label="Collection history">
+        <div class="panel-b">
+          <div id="col-history"></div>
+          <p class="small muted" id="col-history-coverage" role="status"></p>
+        </div>
+      </section>
+      </div>
 
-      <div class="grid g-side">
+      <div class="collection-workspace">
         <div>
           <div class="panel" style="margin-bottom:18px">
             <div class="panel-h">
@@ -229,33 +329,25 @@
 
         <div>
           <div class="panel" style="margin-bottom:18px">
-            <div class="panel-h"><h2>Add cards</h2>
-              <span class="small muted" style="margin-left:auto" id="add-target"></span></div>
-            <div class="panel-b">
-              <div class="grid g-2">
-                <label class="fld"><span>Set</span><select id="add-set"></select></label>
-                <label class="fld"><span>Minimum value — hides bulk you would never sell</span>
-                  <select id="add-min">
-                    <option value="0">Everything</option>
-                    <option value="1" selected>$1+</option>
-                    <option value="3">$3+</option>
-                    <option value="10">$10+</option>
-                  </select></label>
-              </div>
-              <label class="fld"><span>Search</span>
-                <input type="search" id="add-search" placeholder="Shanks, OP01-120…" autocomplete="off"></label>
-              <div class="note small" style="margin-bottom:12px">
-                Tap a card to add it. Base rares median <b>$0.22</b> and commons <b>$0.07</b>,
-                so the $1 filter drops ~80% of the cards while keeping ~85% of the value.
-              </div>
-              <div id="add-grid" class="cardgrid"></div>
-            </div>
-          </div>
-
-          <div class="panel" style="margin-bottom:18px">
             <div class="panel-h"><h2 id="col-title">Cards</h2>
               <span class="small muted" style="margin-left:auto" id="col-sub"></span></div>
-            <div class="tbl-scroll">
+            <p class="small muted" id="col-price-source"></p>
+            <div class="collection-tools">
+              <input id="col-query" type="search" aria-label="Search this binder" placeholder="Search this binder" autocomplete="off">
+              <label>Sort <select id="col-sort">
+                <option value="value">Total value</option>
+                <option value="name">Card name</option>
+                <option value="qty">Quantity</option>
+              </select></label>
+              <button class="btn small" id="col-sell" type="button" aria-pressed="false">Review for sale</button>
+              <span class="small muted" id="col-signal-status" role="status"></span>
+            </div>
+            <div class="segmented collection-mode" id="collection-mode" role="group" aria-label="Binder view">
+              <button type="button" data-binder-mode="gallery" aria-pressed="true">Gallery</button>
+              <button type="button" data-binder-mode="table" aria-pressed="false">Edit holdings</button>
+            </div>
+            <div class="binder-gallery" id="binder-gallery"></div>
+            <div class="tbl-scroll" id="binder-table" hidden>
               <table class="tbl" id="col-tbl">
                 <thead><tr>
                   <th>Card</th><th>Set</th><th>State</th>
@@ -267,6 +359,25 @@
             </div>
           </div>
 
+          <details class="panel collection-add">
+            <summary>Quick add <span class="small muted" id="add-target"></span></summary>
+            <div class="panel-b">
+              <div class="grid g-2">
+                <label class="fld"><span>Set</span><select id="add-set"></select></label>
+                <label class="fld"><span>Minimum value</span>
+                  <select id="add-min">
+                    <option value="0">Everything</option>
+                    <option value="1" selected>$1+</option>
+                    <option value="3">$3+</option>
+                    <option value="10">$10+</option>
+                  </select></label>
+              </div>
+              <label class="fld"><span>Search</span>
+                <input type="search" id="add-search" placeholder="Shanks, OP01-120…" autocomplete="off"></label>
+              <p class="small muted">Tap a card to add it. Tap it again to remove one copy.</p>
+              <div id="add-grid" class="cardgrid"></div>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -291,21 +402,14 @@
         </div>
       </div>
 
-      <!-- One-time setup, so it lives at the very bottom and starts closed.
-           It previously sat above "Add cards", pushing the primary task 1.5
-           screens down the page on a phone. -->
-      <div class="panel" data-collapse="sheets" data-collapse-default-closed style="margin-top:18px">
-        <div class="panel-h"><h2>Google Sheets</h2>
-          <span class="small muted" style="margin-left:auto">set up once</span></div>
-        <div class="panel-b" id="sync-panel"></div>
-      </div>
     </section>
 
     <!-- ================================================ SET EXPLORER ==== -->
-    <section class="view hidden" data-view="sets">
+    <section class="view hidden" id="view-sets" role="tabpanel" data-view="sets" aria-labelledby="tab-sets">
+      <div class="catalog-head"><h1>Set Explorer</h1></div>
       <div class="panel" style="margin-bottom:18px">
         <div class="panel-h">
-          <h2>Set Explorer</h2>
+          <h2>Booster sets</h2>
           <span class="small muted" style="margin-left:auto" id="sets-sub"></span>
         </div>
         <div class="panel-b small">
@@ -347,15 +451,15 @@
       </div>
     </section>
 
-    <section class="view hidden market-scanner" data-view="signals" aria-labelledby="sig-title">
+    <section class="view hidden market-scanner" id="view-signals" role="tabpanel" data-view="signals" aria-labelledby="tab-signals">
       <h1 id="sig-title">Market Scanner</h1>
       <div class="scanner-filters">
         <label class="fld"><span>Scope</span><select id="sig-scope">
           <option value="all">All Cards</option><option value="owned">My Collection</option>
         </select></label>
         <label class="fld"><span>Call</span><select id="sig-call">
-          <option value="">All calls</option><option>Buy Now</option><option>Sell Now</option>
-          <option>Hold</option><option>Insufficient data</option>
+          <option value="">All signals</option><option value="Buy Now">Buy candidate</option><option value="Sell Now">Review for sale</option>
+          <option value="Hold">No clear signal</option><option>Insufficient data</option>
         </select></label>
         <label class="fld"><span>Search</span><input type="search" id="sig-search" placeholder="Name or card number"></label>
         <label class="fld"><span>Set</span><select id="sig-set"><option value="">All sets</option></select></label>
@@ -371,14 +475,49 @@
       <div id="sig-results" class="scanner-results"></div>
       <button id="sig-more" class="btn" type="button" hidden>Show more cards</button>
       <details class="market-rules scanner-tracking">
-        <summary>Track signal performance</summary>
-        <p class="small muted">Saves Buy and Sell calls from successful live-feed scans in this browser. Checks the exact 30- and 90-day market quotes on future scans.</p>
+        <summary>Forward signal performance</summary>
+        <p class="small muted">The daily job records the flags before outcomes are known. It compares them with unflagged cards of similar price and the same card type on the same date.</p>
+        <p class="small muted">Modeled returns assume a purchase at the lowest listing and a sale at Market Price, with standard TCGplayer seller fees and $5 seller shipping. Acquisition shipping and buyer tax are excluded. Repeated printings and overlapping dates can affect the results.</p>
         <div id="sig-tracking" class="small muted"></div>
       </details>
     </section>
 
     <!-- ==================================================== SETTINGS ==== -->
-    <section class="view hidden" data-view="settings">
+    <section class="view hidden market-scanner" id="view-watchlist" role="tabpanel" data-view="watchlist" aria-labelledby="tab-watchlist">
+      <div class="catalog-head">
+        <h1 id="watch-title">Watchlist</h1>
+        <button class="btn primary" type="button" id="watch-search">Find cards</button>
+      </div>
+      <p id="watch-status" class="small muted" role="status"></p>
+      <div id="watch-results" class="scanner-results"></div>
+    </section>
+
+    <section class="view hidden" id="view-settings" role="tabpanel" data-view="settings" aria-labelledby="tab-settings">
+      <div class="catalog-head"><h1>Settings</h1></div>
+      <p id="shared-history-update" class="small muted" role="status"></p>
+      <section class="panel" aria-labelledby="backup-title">
+        <div class="panel-h"><h2 id="backup-title">Collection backup</h2></div>
+        <div class="panel-b">
+          <p class="small muted">Keep one backup file for your binders, opening history, watchlist, and saved eBay sales.</p>
+          <p id="backup-status" class="small" role="status">Checking automatic backup…</p>
+          <p id="backup-last" class="small muted" hidden></p>
+          <div class="backup-actions">
+            <button class="btn primary" id="backup-connect" type="button" hidden>Enable automatic backup</button>
+            <button class="btn primary" id="backup-reconnect" type="button" hidden>Reconnect backup</button>
+            <button class="btn" id="backup-download" type="button" hidden>Download backup</button>
+            <button class="btn" id="backup-restore" type="button">Restore from file</button>
+            <input id="backup-file" type="file" accept=".json,application/json" hidden>
+          </div>
+          <div id="backup-preview" class="note" hidden>
+            <p id="backup-preview-text" class="small"></p>
+            <div class="backup-actions">
+              <button class="btn primary" id="backup-apply" type="button">Replace collection</button>
+              <button class="btn ghost" id="backup-cancel" type="button">Cancel</button>
+            </div>
+          </div>
+          <p id="backup-restore-status" class="small" role="status"></p>
+        </div>
+      </section>
       <div class="panel" data-collapse="datasource" data-collapse-mobile>
         <div class="panel-h"><h2>Data source</h2>
           <span class="small muted" style="margin-left:auto" id="src-state"></span>
@@ -388,8 +527,8 @@
             Card data and prices come from TCGplayer via
             <a href="https://tcgcsv.com/" target="_blank" rel="noopener">tcgcsv.com</a>, which
             refuses browser requests, so a small Cloudflare Worker fetches on the app's behalf.
-            Deploy <code>worker/worker.js</code> and paste its URL here. It is stored in this
-            browser only and never committed — see <code>DEPLOY.md</code>.
+            The hosted app uses Grand Line Vault’s Worker. Enter a URL to override
+            it for this browser, or leave the field blank to restore the default.
           </div>
           <label class="fld">
             <span>Worker URL</span>
@@ -466,10 +605,8 @@
   </main>
 
   <footer class="foot">
-    Card data and English market prices from
-    <a href="https://tcgcsv.com/" target="_blank" rel="noopener">tcgcsv.com</a>, sourced from TCGplayer.
-    Pull rates are community estimates, not official Bandai figures — treat every number here as a model, not a promise.
-    Built for ripping, not for financial advice.
+    <strong>Grand Line Vault</strong>
+    <span>TCGplayer data via <a href="https://tcgcsv.com/" target="_blank" rel="noopener">TCGCSV</a> · Community pull-rate estimates</span>
   </footer>
 </div>
 
@@ -490,10 +627,12 @@ if ('serviceWorker' in navigator) {
 </script>
 <script src="data.js?v=2.13.0"></script>
 <script src="engine.js?v=2.13.0"></script>
-<script src="collection.js?v=2.13.0"></script>
-<script src="source.js?v=2.15.0"></script>
-<script src="price-history.js?v=2.19.0"></script>
-<script src="market-analysis.js?v=2.18.0"></script>
-<script src="app.js?v=2.19.0"></script>
+<script src="collection.js?v=3.4.0"></script>
+<script src="source.js?v=3.4.0"></script>
+<script src="price-history.js?v=3.0.0"></script>
+<script src="market-analysis.js?v=3.3.0"></script>
+<script src="card-scan.js?v=3.2.0"></script>
+<script src="backup.js?v=3.5.0"></script>
+<script src="app.js?v=3.5.0"></script>
 </body>
 </html>

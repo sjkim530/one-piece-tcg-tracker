@@ -1,12 +1,12 @@
 # Development snapshot of TCGCSV, ~3 MB, 84 files.
 #
-# Deliberately NOT deployed. source.js falls back to it when no Worker URL is
-# configured, which is what makes the app buildable and testable offline. If it
-# were published, a visitor with no Worker would silently read frozen prices
-# from whenever this was downloaded, instead of being told to set up the Worker.
+# Local development fixture. The HTTPS app defaults to the public Worker.
 mockapi/
+market-summary.json
+signal-performance.json
 .price-cache/
 __pycache__/
+grand-line-vault-backup*.json
 
 # The version log. 841 lines of reasoning that a browser would download and
 # ignore on every cold load, so it was lifted out of index.html. Local only by

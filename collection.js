@@ -282,9 +282,7 @@ const OQ_COLLECTION = (function (D, E) {
       if (isBooster && !isBooster(setId)) continue;
       const r = touch(setId);
       const qty = Number(it.qty) || 0;
-      const w = isGraded(it)
-        ? ((it.value != null && it.value !== '') ? Number(it.value) : null)
-        : ((it.value != null && it.value !== '') ? Number(it.value) : priceFor(it.key));
+      const w = unitValue(it, priceFor);
       r.pulledCards += qty;
       if (w != null) r.pulledValue += w * qty;
     }
@@ -344,12 +342,6 @@ const OQ_COLLECTION = (function (D, E) {
      PORTFOLIO
      ========================================================================== */
 
-  /**
-   * Value a collection at current market.
-   * Graded copies have no market feed, so they fall back to what you paid —
-   * and are counted separately so a big graded holding cannot quietly inflate
-   * a number that is otherwise live.
-   */
   /** Sane quantity: a non-negative integer, never NaN, never absurd. */
   function qtyOf(it) {
     const n = Math.floor(Number(it && it.qty));
@@ -378,56 +370,74 @@ const OQ_COLLECTION = (function (D, E) {
     return live(items).filter(it => !ok[it.colId]);
   }
 
+  function amount(value) {
+    if (value == null || String(value).trim() === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : null;
+  }
+
+  function unitValue(it, priceFor) {
+    const manual = amount(it.value);
+    if (manual != null || isGraded(it)) return manual;
+    const market = amount(priceFor(it.key, it.printing));
+    return market > 0 ? market : null;
+  }
+
   function valueOf(items, priceFor) {
     let raw = 0, graded = 0, cards = 0, unpriced = 0, cost = 0;
-    // Gain is only meaningful against cards you actually recorded a cost for.
-    // Comparing the whole portfolio to a partial cost basis invents profit.
-    let costedValue = 0, costedCards = 0;
+    let costedValue = 0, costedCards = 0, comparableCards = 0, comparableCost = 0;
 
     for (const it of live(items)) {
-      // A negative or non-numeric qty silently SUBTRACTS from your collection
-      // value, and a pasted or synced row can carry either. Clamped rather
-      // than trusted; 9,999 is far past any real holding of one card.
       const qty = qtyOf(it);
+      const paid = amount(it.paid);
+      const value = unitValue(it, priceFor);
       cards += qty;
-      const hasCost = it.paid != null && it.paid !== '';
-      if (hasCost) {
-        cost += Number(it.paid) * qty;
+      if (paid != null) {
+        cost += paid * qty;
         costedCards += qty;
-        const w = isGraded(it)
-          ? ((it.value != null && it.value !== '') ? Number(it.value) : null)
-          : ((it.value != null && it.value !== '') ? Number(it.value) : priceFor(it.key));
-        if (w != null) costedValue += w * qty;
+        if (value != null) {
+          comparableCards += qty;
+          comparableCost += paid * qty;
+          costedValue += value * qty;
+        }
       }
 
-      if (isGraded(it)) {
-        // No market feed for graded — worth only what you say it is worth.
-        if (it.value != null && it.value !== '') graded += Number(it.value) * qty;
-        else unpriced += qty;
-      } else {
-        // A manual value overrides the feed; otherwise live market.
-        const p = (it.value != null && it.value !== '') ? Number(it.value) : priceFor(it.key);
-        if (p == null) unpriced += qty;
-        else raw += p * qty;
-      }
+      if (value == null) unpriced += qty;
+      else if (isGraded(it)) graded += value * qty;
+      else raw += value * qty;
     }
+    const gain = costedValue - comparableCost;
     return {
       raw, graded, total: raw + graded, cards, unpriced, cost,
-      costedCards, costedValue,
-      gain: costedValue - cost,
-      gainPct: cost > 0 ? (costedValue - cost) / cost : null,
-      // True only when every card has a recorded cost — otherwise the gain
-      // covers a subset and the UI has to say so.
+      costedCards, costedValue, comparableCards, gain,
+      gainPct: comparableCost > 0 ? gain / comparableCost : null,
       costComplete: costedCards === cards
     };
+  }
+
+  function holdingHistory(rows) {
+    const latest = rows.reduce((day, row) => Math.max(day, row.points.at(-1)?.[0] ?? -Infinity), -Infinity);
+    const basket = rows.filter(row => row.points.length && row.points.at(-1)[0] >= latest - 6);
+    const totals = new Map();
+    for (const { qty, points } of basket) {
+      for (const [day, cents] of points) {
+        const total = totals.get(day) || { cents: 0, quotes: 0 };
+        total.cents += cents * qty;
+        total.quotes++;
+        totals.set(day, total);
+      }
+    }
+    const points = [...totals].filter(([, day]) => day.quotes === basket.length)
+      .sort(([a], [b]) => a - b).map(([day, total]) => [day, total.cents]);
+    return { points, copies: basket.reduce((sum, row) => sum + row.qty, 0) };
   }
 
   /** Roll up duplicates so the UI shows one line per distinct card+state. */
   function group(items) {
     const out = {};
     for (const it of live(items)) {
-      const gk = [it.key, it.cond, it.grader, it.grade].join('~');
-      if (!out[gk]) out[gk] = { key: it.key, cond: it.cond, grader: it.grader,
+      const gk = JSON.stringify([it.key, it.printing || null, it.cond, it.grader, it.grade]);
+      if (!out[gk]) out[gk] = { key: it.key, printing: it.printing, cond: it.cond, grader: it.grader,
                                 grade: it.grade, qty: 0, rows: [] };
       out[gk].qty += Number(it.qty) || 0;
       out[gk].rows.push(it);
@@ -534,7 +544,8 @@ const OQ_COLLECTION = (function (D, E) {
     if (!res.ok) throw new Error('Sheet returned HTTP ' + res.status);
     const data = await res.json();
     if (!data || data.ok !== true) throw new Error((data && data.error) || 'Sheet rejected the read');
-    return { collections: data.collections || [], items: data.items || [], opens: data.opens || [] };
+    return { collections: data.collections || [], items: data.items || [], opens: data.opens || [],
+      binderFinishes: data.binderFinishes === true };
   }
 
   async function push(url, payload) {
@@ -554,7 +565,7 @@ const OQ_COLLECTION = (function (D, E) {
 
   return {
     uid, newCollection, newItem, newOpen, isGraded, rateOf,
-    mergeRows, live, livePlaced, orphans, qtyOf, valueOf, group, scoreboard,
+    mergeRows, live, livePlaced, orphans, qtyOf, amount, unitValue, valueOf, holdingHistory, group, scoreboard,
     migrateKeys, isV1Key, splitV1Key, numberFrom,
     dedupePermanent, newPermanent, PERMANENT_ID, isPermanent,
     validUrl, diagnose, pull, push

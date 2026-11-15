@@ -1,17 +1,16 @@
 {
-  "name": "OPTCG Quant",
-  "short_name": "OPTCG Quant",
-  "description": "One Piece TCG rip-or-buy analytics: pull odds, price trends and collection tracking.",
+  "name": "Grand Line Vault",
+  "short_name": "Grand Line Vault",
+  "description": "Search One Piece cards, track your collection, and follow the market.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#070b14",
-  "theme_color": "#0c1322",
+  "background_color": "#edf0f5",
+  "theme_color": "#17213b",
   "categories": ["utilities", "productivity"],
   "icons": [
-    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    { "src": "icons/vault-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/vault-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ]
 }

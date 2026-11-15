@@ -262,8 +262,10 @@ const OQ_HISTORY = (() => {
     const x = day => firstDay === lastDay ? (left + right) / 2 :
       left + (day - firstDay) / (lastDay - firstDay) * (right - left);
     const y = price => 8 + (top - price) / (top - bottom) * (height - 20);
-    ctx.fillStyle = '#aabbd8';
-    ctx.strokeStyle = '#2d405f';
+    const colors = getComputedStyle(canvas);
+    const ink = colors.getPropertyValue('--ink-2').trim();
+    ctx.fillStyle = ink;
+    ctx.strokeStyle = colors.getPropertyValue('--line').trim();
     ctx.textBaseline = 'middle';
     for (let i = 0; i < 4; i++) {
       const value = bottom + (top - bottom) * i / 3;
@@ -274,7 +276,7 @@ const OQ_HISTORY = (() => {
       ctx.lineTo(right, at);
       ctx.stroke();
     }
-    ctx.strokeStyle = ctx.fillStyle = '#8dcfff';
+    ctx.strokeStyle = ctx.fillStyle = colors.getPropertyValue('--brass').trim();
     ctx.lineWidth = 1.75;
     ctx.beginPath();
     for (let i = 0; i < points.length; i++) {
@@ -292,7 +294,7 @@ const OQ_HISTORY = (() => {
     }
     const selected = points.find(([day]) => day === selectedDay);
     if (selected) {
-      ctx.strokeStyle = '#aabbd8';
+      ctx.strokeStyle = ink;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x(selectedDay), 8);
@@ -306,15 +308,27 @@ const OQ_HISTORY = (() => {
   }
 
   function chart(container, productId, printings, onPrintingChange, initialPrinting) {
+    return renderChart(container, load(productId, printings), {
+      title: 'TCGplayer price history', label: 'Market price', onPrintingChange, initialPrinting
+    });
+  }
+
+  function holdingsChart(container, pending) {
+    return renderChart(container, pending.then(result => ({
+      ...result, series: [{ points: result.points }]
+    })), { title: 'Current holdings over time', label: 'Estimated value' });
+  }
+
+  function renderChart(container, pending, options) {
     observers.get(container)?.disconnect();
     const root = document.createElement('div');
     root.innerHTML = `
       <div class="history-toolbar">
-        <h3>TCGplayer price history</h3>
+        <h3>${options.title}</h3>
         <label>Range <select>${ranges.map(range => '<option>' + range + '</option>').join('')}</select></label>
       </div>
       <p class="small muted" role="status">Loading prices…</p>
-      <canvas class="history-chart" tabindex="0" role="img" aria-label="TCGplayer Market Price history" hidden></canvas>
+      <canvas class="history-chart" tabindex="0" role="img" aria-label="${options.title}" hidden></canvas>
       <div class="history-dates small muted" aria-hidden="true" hidden><span></span><span></span></div>
       <div class="history-point small" role="status" hidden></div>
       <div class="history-stats small" hidden></div>`;
@@ -327,12 +341,12 @@ const OQ_HISTORY = (() => {
     const pointLabel = root.querySelector('.history-point');
     range.value = '6M';
     range.disabled = true;
-    return load(productId, printings).then(result => {
+    return pending.then(result => {
       if (root.parentElement !== container) return;
       const printing = document.createElement('select');
       printing.setAttribute('aria-label', 'Printing');
       result.series.forEach(({ printing: label }, index) => printing.add(new Option(label || 'Default', index)));
-      const initialIndex = result.series.findIndex(series => series.printing === initialPrinting);
+      const initialIndex = result.series.findIndex(series => series.printing === options.initialPrinting);
       if (initialIndex >= 0) printing.value = String(initialIndex);
       if (result.series.length > 1) root.querySelector('.history-toolbar').append(printing);
       range.disabled = false;
@@ -345,7 +359,7 @@ const OQ_HISTORY = (() => {
         selectedIndex = index;
         const quote = points[index];
         pointLabel.textContent = quote
-          ? dateLabel(quote[0]) + ' · Market ' + dollars(quote[1]) +
+          ? dateLabel(quote[0]) + ' · ' + options.label + ' ' + dollars(quote[1]) +
             (quote[2] == null ? '' : ' · Lowest listing ' + dollars(quote[2]))
           : 'Hover or use the arrow keys to inspect a day.';
         redraw();
@@ -356,10 +370,10 @@ const OQ_HISTORY = (() => {
         canvas.hidden = dates.hidden = stats.hidden = pointLabel.hidden = !points.length;
         pointLabel.textContent = 'Hover or use the arrow keys to inspect a day.';
         const notes = [];
-        if (result.archiveUnavailable) notes.push('Archived prices are unavailable.');
+        if (result.archiveUnavailable) notes.push('Some archived prices could not load.');
         if (result.storageUnavailable) notes.push('Browser snapshots are unavailable.');
         if (!points.length) {
-          status.textContent = ['No recorded prices for this range.', ...notes].join(' ');
+          status.textContent = [result.emptyMessage || 'No recorded prices for this range.', ...notes].join(' ');
           return;
         }
         const [first, last] = [points[0], points.at(-1)];
@@ -372,14 +386,14 @@ const OQ_HISTORY = (() => {
         dates.firstElementChild.textContent = dateLabel(first[0]);
         dates.lastElementChild.textContent = first === last ? '' : dateLabel(last[0]);
         const prices = points.map(point => point[1]);
-        const change = Math.round((last[1] / first[1] - 1) * 1000) / 10;
+        const change = first[1] > 0 ? Math.round((last[1] / first[1] - 1) * 1000) / 10 : null;
         stats.textContent = [
           'Latest ' + dollars(last[1]),
           'Low ' + dollars(Math.min(...prices)),
           'High ' + dollars(Math.max(...prices)),
-          first === last ? '' : 'Change ' + (change > 0 ? '+' : '') + change.toFixed(1) + '%'
+          first === last || change == null ? '' : 'Change ' + (change > 0 ? '+' : '') + change.toFixed(1) + '%'
         ].filter(Boolean).join(' · ');
-        canvas.setAttribute('aria-label', 'Market price from ' + span + '. ' + stats.textContent);
+        canvas.setAttribute('aria-label', options.label + ' from ' + span + '. ' + stats.textContent);
         redraw();
       }
       canvas.addEventListener('pointermove', event => {
@@ -403,7 +417,7 @@ const OQ_HISTORY = (() => {
       range.addEventListener('change', render);
       function selectPrinting() {
         render();
-        onPrintingChange?.(result.series[Number(printing.value)]);
+        options.onPrintingChange?.(result.series[Number(printing.value)]);
       }
       printing.addEventListener('change', selectPrinting);
       const observer = new ResizeObserver(() => {
@@ -415,5 +429,5 @@ const OQ_HISTORY = (() => {
     });
   }
 
-  return { record, load, scan, selectRange, chart, dateLabel, trackedCalls, saveTrackedCalls, sharedStatus };
+  return { record, load, scan, selectRange, chart, holdingsChart, dateLabel, trackedCalls, saveTrackedCalls, sharedStatus };
 })();

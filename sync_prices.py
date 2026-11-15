@@ -54,8 +54,16 @@ def collect_quotes():
     if not groups:
         raise ValueError("TCGCSV returned no One Piece groups")
     buckets = [{} for _ in range(BUCKETS)]
+    singles = {}
     for group in groups:
         time.sleep(.15)
+        for row in results(f"{CATEGORY}/{group}/products"):
+            fields = {entry["name"]: entry["value"] for entry in row.get("extendedData", [])}
+            card_type = (fields.get("Card Type") or fields.get("CardType") or "").strip()
+            number = (fields.get("Number") or "").strip()
+            if card_type or number:
+                category = card_type or "Other single"
+                singles[str(int(row["productId"]))] = category
         for row in results(f"{CATEGORY}/{group}/prices"):
             market = cents(row.get("marketPrice"))
             if market is None:
@@ -65,7 +73,9 @@ def collect_quotes():
             buckets[product % BUCKETS][key] = [market, cents(row.get("lowPrice"))]
     if not any(buckets):
         raise ValueError("TCGCSV returned no One Piece prices")
-    return buckets
+    if not singles:
+        raise ValueError("TCGCSV returned no classified One Piece singles")
+    return buckets, singles
 
 
 def write_json(path, data):
@@ -87,7 +97,7 @@ def sync():
     # Check the existing archive before making the group requests.
     paths = [HISTORY / f"{bucket}.json" for bucket in range(BUCKETS)]
     archive = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
-    quotes = collect_quotes()
+    quotes, singles = collect_quotes()
     if feed_timestamp() != stamp:
         raise RuntimeError("TCGCSV changed builds during collection. Retry the sync.")
 
@@ -108,6 +118,7 @@ def sync():
         write_json(path, {key: series for key, series in old.items() if series})
 
     count = sum(map(len, quotes))
+    write_json(HISTORY / "singles.json", {"sourceUpdatedAt": stamp.isoformat(), "products": singles})
     write_json(status_path, {"sourceUpdatedAt": stamp.isoformat(), "quotes": count})
     print(f"Saved {count:,} One Piece prices from {stamp.isoformat()}")
 

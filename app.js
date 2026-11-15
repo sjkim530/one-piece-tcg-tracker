@@ -19,9 +19,10 @@
     collapse: 'oq.collapse.v1',
     cols:   'oq.collections.v1',
     items:  'oq.items.v1',
+    comps:  'oq.ebayComps.v1',
+    watch:  'oq.watchlist.v1',
     opens:  'oq.opens.v1',
-    sync:   'oq.syncurl.v1',
-    lastPush: 'oq.lastpush.v1',
+    collection: 'oq.collection.v2',
     hist:   'oq.hist.v1'
   };
 
@@ -37,33 +38,32 @@
    *
    * This used to swallow failures silently, which is fine for the card cache
    * (it just refetches) and NOT fine for the collection — a full localStorage
-   * would drop your binder on the next reload with no warning at all. Callers
-   * that hold user-entered data must check the result. saveCritical() does.
+   * would drop your binder on the next reload with no warning at all.
    */
   function save(key, value) {
     try { localStorage.setItem(key, JSON.stringify(value)); return true; }
     catch (_) { return false; }
   }
 
-  let quotaWarned = false;
-  /** For data the user typed and cannot recreate. Fails loudly, once. */
-  function saveCritical(key, value) {
-    if (save(key, value)) return true;
+  const collectionFields = ['cols', 'items', 'opens'];
+  const collectionState = () => load(KEY.collection, null) || {
+    rows: Object.fromEntries(collectionFields.map(key => [key, load(KEY[key], [])])),
+    watch: load(KEY.watch, []), comps: load(KEY.comps, [])
+  };
+  let committedCollection = collectionState();
 
-    // Most likely cause is the ~1.3MB card cache crowding a 5MB budget.
-    // Dropping it is safe — it refetches — and usually frees enough room.
-    try { localStorage.removeItem(KEY.cards); } catch (_) {}
-    if (save(key, value)) return true;
-
-    if (!quotaWarned) {
-      quotaWarned = true;
-      setSync('err', 'browser storage full');
-      alert('Your browser storage is full, so this change could not be saved locally.\n\n' +
-            'Connect Google Sheets on the My Collection tab to keep your data safe, ' +
-            'or free up space for this site.');
-    }
-    return false;
+  function userRecords(snapshot, name) {
+    const rows = snapshot[name] ?? load(KEY[name], []);
+    return Array.isArray(rows) ? rows : [];
   }
+
+  function backupData() {
+    const snapshot = collectionState();
+    return { ...snapshot.rows, watch: userRecords(snapshot, 'watch'), comps: userRecords(snapshot, 'comps') };
+  }
+
+  const backup = OQ_BACKUP.create({ read: backupData,
+    identity: () => collectionState().backupId, status: renderBackupStatus });
 
   /* --------------------------------------------------------------- state -- */
   const S = {
@@ -84,18 +84,11 @@
     sort: { sets: { by: 'roi', dir: -1 } },
 
     // ---- collection
-    cols:    load(KEY.cols, []),
-    items:   load(KEY.items, []),
-    opens:   load(KEY.opens, []),
+    ...structuredClone(committedCollection.rows),
     curCol:  null,
     addSet:  null,
     addSearch: '',
-    browseSets: null,
-    syncUrl: load(KEY.sync, ''),
-    lastPushAt: load(KEY.lastPush, 0),
-    syncState: 'off',                // off | ok | busy | err
-    syncMsg: '',
-    pushTimer: null
+    browseSets: null
   };
 
   /* ------------------------------------------------------------- helpers -- */
@@ -188,11 +181,20 @@
 
   const priceOf = card => card.market_price || 0;
 
-  /** Live market price for a collection row, via its stored composite key. */
-  function priceForKey(key) {
-    const c = S.byKey[key];
-    return c ? (c.market_price || 0) : null;
+  function holdingPrinting(item, card = S.byKey[item.key]) {
+    return item.printing || (card?.alt_printing ? null : (card?.printing ?? null));
   }
+
+  function priceForKey(key, finish) {
+    const card = S.byKey[key];
+    const printing = holdingPrinting({ key, printing: finish }, card);
+    if (!card || printing == null) return null;
+    const price = printing === card.printing ? card.market_price :
+      printing === card.alt_printing?.printing ? card.alt_printing.market : null;
+    return price > 0 ? price : null;
+  }
+
+  const holdingKey = (key, printing) => JSON.stringify([String(key), printing]);
 
   function indexFor(setId) {
     if (S.indexCache[setId]) return S.indexCache[setId];
@@ -338,9 +340,7 @@
   }
 
   /* The card cache was 3,092 KB of a ~5 MB localStorage budget — 62% spent on
-     one key, with the user's collection sharing the same quota. saveCritical()
-     already drops this cache when a write fails, but living that close to the
-     ceiling means the first symptom is a failed save of data you typed.
+     one key, with the user's collection sharing the same quota.
 
      Four fields are removed on the way in:
        card_image (485 KB)  derivable from id — it IS the id in a fixed URL
@@ -374,10 +374,8 @@
   async function fetchCards(force) {
     if (!force) {
       const cached = load(KEY.cards, null);
-      // v1 rows are keyed on the old composite and carry no productId. Loading
-      // them into a v2 app would look fine and be subtly wrong everywhere, so
-      // a cache without ids is discarded and refetched rather than migrated.
-      if (cached && cached.rows && cached.rows.length && cached.rows[0].id != null) {
+      // Older caches can omit an unpriced finish or gameplay fields.
+      if (cached && cached.rows?.length && cached.feed?.source === SRC.base() && cached.feed?.schema === 2) {
         const cards = cached.rows.map(fatCard);
         const products = cached.products || [];
         applyCards(cards, cached.at, products, cached.feed);
@@ -397,12 +395,13 @@
   async function refreshCachedCards() {
     const updated = await SRC.loadUpdated();
     if (!updated) return;
-    if (S.catalogFeed?.updated === updated && S.catalogFeed.mock === SRC.isMock() &&
-        S.cards[0]?.printing !== undefined) return;
+    if (S.catalogFeed?.updated === updated && S.catalogFeed.source === SRC.base() &&
+        !S.loadFailures?.length) return;
     return fetchCurrentCards(updated);
   }
 
   async function fetchCurrentCards(updated) {
+    const source = SRC.base();
     const mock = SRC.isMock();
     const sets = await SRC.buildSets(D.SETS);
     const result = await SRC.loadAll(sets);
@@ -420,7 +419,7 @@
     const complete = failed.length === 0;
 
     const at = new Date().toISOString();
-    const feed = { updated, mock };
+    const feed = { updated, mock, source, schema: 2 };
     if (complete) save(KEY.cards, { at, rows: cards.map(slimCard), products, feed });
     applyCards(cards, at, products, feed);
     if (complete) saveDailyPrices(feed, cards, products);
@@ -1339,6 +1338,61 @@
 
   let sealedRun;
   let openSealedSet;
+  let marketSummary;
+
+  function loadMarketSummary(today) {
+    const feedStamp = S.catalogFeed?.updated;
+    if (marketSummary?.today !== today || marketSummary.feedStamp !== feedStamp) marketSummary = null;
+    if (!marketSummary) {
+      const request = { today, feedStamp };
+      request.result = fetch('./market-summary.json', { cache: 'no-cache' }).then(async response => {
+        if (!response.ok) throw new Error('Market summary unavailable');
+        const summary = await response.json();
+        if (summary.version !== 1 || !Number.isSafeInteger(summary.day) || !summary.rows ||
+            Math.floor(Date.parse(summary.sourceUpdatedAt) / 86400000) !== summary.day) {
+          throw new Error('Invalid market summary');
+        }
+        const currentDay = Math.floor(Date.parse(feedStamp) / 86400000);
+        if (summary.day > today || summary.day < today - 3 ||
+            (!S.catalogFeed?.mock && summary.day < currentDay)) throw new Error('Market summary is out of date');
+        return summary;
+      }).catch(() => {
+        if (marketSummary === request) marketSummary = null;
+        return null;
+      });
+      marketSummary = request;
+    }
+    return marketSummary.result;
+  }
+
+  function summaryRow(summary, card, printing = card.printing) {
+    return summary.rows[card.id + ':' + printing];
+  }
+
+  function applySealedSummary(run, summary, boxes, pools) {
+    const singlesBySet = new Map(pools);
+    run.calls = new Map();
+    run.singlesPrices = new Map();
+    const movesByDay = new Map();
+    for (const box of boxes) {
+      const quote = summaryRow(summary, box)?.sealed || {};
+      const offset = summary.day - quote.day;
+      const key = box.set_id + ':' + quote.day;
+      const singles = singlesBySet.get(box.set_id) || [];
+      if (!movesByDay.has(key) && quote.day >= run.today - 3 && quote.day <= run.today) {
+        const prices = new Map();
+        const moves = [];
+        for (const { card } of singles) {
+          const [price, move] = summaryRow(summary, card)?.recent?.[offset] || [];
+          if (price != null) prices.set(E.cardKey(card), price / 100);
+          if (move != null) moves.push(move);
+        }
+        run.singlesPrices.set(key, prices);
+        movesByDay.set(key, moves);
+      }
+      run.calls.set(String(box.id), OQ_MARKET.analyzeSealedQuote(quote, run.today, movesByDay.get(key) || [], singles.length));
+    }
+  }
 
   function sealedBoxes(setId) {
     const listing = product => product.low_price > 0 ? product.low_price : Infinity;
@@ -1355,6 +1409,12 @@
     const pools = sets.map(set => [set.id, indexFor(set.id).all]);
     const scan = (entries, evaluate) => OQ_HISTORY.scan(entries, evaluate, () => {});
     (async () => {
+      const summary = await loadMarketSummary(today);
+      if (sealedRun !== run) return;
+      if (summary) {
+        applySealedSummary(run, summary, boxes, pools);
+        return;
+      }
       await S.historyWrite;
       const quotes = await scan(boxes.map(box => ({ card: box, printing: box.printing })),
         ({ card }, points) => ({ box: card, points }));
@@ -1412,14 +1472,16 @@
     return sealedRun.calls.get(String(box.id)) || { call: 'Insufficient data', reason: 'No box history is available.' };
   }
 
+  const sealedLabels = { Buy: 'Discount candidate', Pass: 'Price caution', Watch: 'Watch' };
+
   function updateSealedCalls() {
     $$('[data-set-call]').forEach(button => {
       const box = sealedBoxes(button.dataset.setCall)[0];
       const { call } = sealedCall(box);
-      button.textContent = call;
+      button.textContent = sealedLabels[call] || call;
       button.dataset.call = call;
       button.title = box?.name || 'Set analysis';
-      button.setAttribute('aria-label', `${call} · ${box?.name || setName(button.dataset.setCall)}`);
+      button.setAttribute('aria-label', `${sealedLabels[call] || call} · ${box?.name || setName(button.dataset.setCall)}`);
     });
     $('#sets-analysis-status').textContent = sealedRun.error ? 'The analysis could not load.' :
       sealedRun.incomplete ? 'Some price history could not load.' : '';
@@ -1442,32 +1504,35 @@
     const listing = analysis.listing;
     const evWithoutTopFive = ev - concentration.top.reduce((sum, pull) => sum + pull.value, 0);
     let opening = analysis.call === 'Loading…' ? 'Loading…' : 'Insufficient data';
-    if (modelFits && coverage >= .6 && ev > 0 && listing > 0) {
-      opening = listing > ev * 100 ? 'Buy singles' :
-        listing > evWithoutTopFive * 100 ? 'Depends on chase cards' : 'Consider opening';
+    const today = Math.floor(Date.now() / 86400000);
+    const fresh = analysis.day >= today - 3 && analysis.day <= today;
+    if (fresh && modelFits && coverage >= .6 && ev > 0 && listing > 0) {
+      opening = listing > ev * 100 ? 'Listing above gross EV' :
+        listing > evWithoutTopFive * 100 ? 'Gross EV depends on chase cards' : 'Listing below adjusted gross EV';
     }
     $('#set-analysis-body').innerHTML = `
       <section class="price-history">
-        <div class="history-toolbar"><h3>Buying sealed</h3>
-          <strong class="market-call" data-call="${esc(analysis.call)}">${esc(analysis.call)}</strong></div>
+        <div class="history-toolbar"><h3>Sealed price</h3>
+          <strong class="market-call" data-call="${esc(analysis.call)}">${esc(sealedLabels[analysis.call] || analysis.call)}</strong></div>
         <p class="small">${esc(analysis.reason)}</p>
         <dl class="market-evidence">
           <div><dt>Market price</dt><dd>${money(analysis.market)}</dd></div>
           <div><dt>Lowest listing</dt><dd>${money(listing)}</dd></div>
           <div><dt>90-day box median</dt><dd>${money(analysis.median)}</dd></div>
+          <div><dt>Listing vs. 90-day median</dt><dd>${listing > 0 && analysis.median > 0 ? trend(listing / analysis.median - 1) : '—'}</dd></div>
           <div><dt>Box trend over 30 days</dt><dd>${trend(analysis.momentum)}</dd></div>
           <div><dt>Median singles trend over 30 days</dt><dd>${trend(analysis.singles)}</dd></div>
-          <div><dt>Quote date</dt><dd>${analysis.day == null ? '—' : esc(OQ_HISTORY.dateLabel(analysis.day))}</dd></div>
+          <div><dt>TCGplayer quote date</dt><dd>${analysis.day == null ? '—' : esc(OQ_HISTORY.dateLabel(analysis.day))}</dd></div>
         </dl>
-        ${analysis.buyPrice != null ? `<p class="small">Buy at <b>${money(analysis.buyPrice)}</b> or less when the box trend is down no more than 10% and the singles trend is down no more than 5%. Pass at <b>${money(analysis.passPrice)}</b> or more. These thresholds use the latest quote and change with the data.</p>` : ''}
+        ${analysis.buyPrice != null ? `<p class="small">The discount rule looks for <b>${money(analysis.buyPrice)}</b> or less when the box trend is down no more than 10% and singles are down no more than 5%. The price caution starts at <b>${money(analysis.passPrice)}</b>. These sealed rules are exploratory and have yet to be backtested.</p>` : ''}
         ${analysis.singlesCount ? `<p class="small muted">Singles trend uses ${analysis.matched} of ${analysis.singlesCount} pullable printings with comparable price history.</p>` : ''}
       </section>
       <section class="price-history">
-        <div class="history-toolbar"><h3>Open or buy singles</h3><strong>${opening}</strong></div>
+        <div class="history-toolbar"><h3>Opening value estimate</h3><strong>${opening}</strong></div>
         ${modelFits && ev > 0 ? `<p class="small">Estimated contents average <b>${E.money(ev, 2)}</b> per box before costs, or <b>${E.money(evWithoutTopFive, 2)}</b> excluding the five largest priced contributors. Those five account for ${E.pct(concentration.share, 0)} of expected value from individually priced cards.</p>
         <ul class="small">${concentration.top.filter(pull => pull.value > 0).map(pull =>
           `<li>${esc(pull.entry.card.card_name)} · ${E.money(pull.value, 2)} expected value per box</li>`).join('')}</ul>` : ''}
-        <p class="small muted">${!modelFits ? 'The pull-rate model does not fit the catalog. ' : !config.verified ? 'Pull rates for this set are estimated. ' : ''}${E.pct(coverage, 0)} of pullable cards have a price on the box quote date. A comparison requires at least 60%. Use Rip vs Buy for the odds on a specific card.</p>
+        <p class="small muted">${!modelFits ? 'The pull-rate model does not fit the catalog. ' : !config.verified ? 'Pull rates for this set are estimated. ' : ''}The model assumes equal odds within each pull slot. Gross value is before selling fees and shipping. ${E.pct(coverage, 0)} of pullable cards have a price on the box quote date. A comparison requires at least 60% and a recent quote.</p>
       </section>`;
     const chartKey = JSON.stringify([box?.id, box?.printing, S.fetchedAt]);
     if (openSealedSet.chartKey === chartKey) return;
@@ -1577,6 +1642,12 @@
   /* ============================================================ SIGNALS == */
 
   const scannerPage = 48;
+  const signalLabels = {
+    'Buy Now': 'Buy candidate',
+    'Sell Now': 'Review for sale',
+    Hold: 'No clear signal',
+    'Insufficient data': 'Insufficient data'
+  };
   const scannerOrder = ['Sell Now', 'Buy Now', 'Hold', 'Insufficient data'];
   let scannerLimit = scannerPage;
   let scannerRun;
@@ -1595,7 +1666,8 @@
 
   async function scanSignals(run) {
     try {
-      await S.historyWrite;
+      const summary = await loadMarketSummary(run.today);
+      if (!summary) await S.historyWrite;
       const entries = run.cards.flatMap(card => {
         const printings = new Set([card.printing, card.alt_printing?.printing].filter(value => value != null));
         if (!printings.size) printings.add(null);
@@ -1604,57 +1676,31 @@
           id: JSON.stringify([String(card.id), printing])
         }));
       });
-      let tracked = [];
-      let trackingUnavailable = false;
-      try { tracked = await OQ_HISTORY.trackedCalls(); }
-      catch { trackingUnavailable = true; }
-      const byPrinting = new Map();
-      for (const row of tracked) {
-        if (!byPrinting.has(row.id)) byPrinting.set(row.id, []);
-        byPrinting.get(row.id).push(row);
-      }
-      const updates = [];
-      const updated = Date.parse(S.catalogFeed?.updated);
-      const liveDay = !S.catalogFeed?.mock && !S.loadFailures?.length && Number.isFinite(updated)
-        ? Math.floor(updated / 86400000) : null;
-      const result = await OQ_HISTORY.scan(entries, (entry, points) => {
+      const evaluate = (entry, points) => {
         points = entry.printing == null ? [] : points;
-        const analysis = OQ_MARKET.analyze(points, run.today);
-        for (const saved of byPrinting.get(entry.id) || []) {
-          const outcomes = { ...saved.outcomes };
-          for (const horizon of [30, 90]) {
-            if (outcomes[horizon] != null) continue;
-            const quote = points.find(point => point[0] === saved.day + horizon);
-            if (quote) outcomes[horizon] = quote[1];
-          }
-          if (Object.keys(outcomes).length !== Object.keys(saved.outcomes).length) {
-            updates.push({ ...saved, outcomes });
-          }
-        }
-        if (liveDay !== null && analysis.day === liveDay && ['Buy Now', 'Sell Now'].includes(analysis.call)) {
-          updates.push({ id: entry.id, day: liveDay, market: analysis.market, call: analysis.call, outcomes: {} });
-        }
+        const savedSummary = summary && entry.printing != null
+          ? summaryRow(summary, entry.card, entry.printing) : null;
+        const latest = savedSummary?.latest || points.at(-1);
+        const analysis = savedSummary && latest[0] >= run.today - 3 && latest[0] <= run.today
+          ? savedSummary.analysis : OQ_MARKET.analyze(latest ? (summary ? [latest] : points) : [], run.today);
         return {
-          ...entry, analysis, latest: points.at(-1),
+          ...entry, analysis, latest,
           search: searchWords([entry.card.card_name, entry.card.card_set_id, entry.rarity].join(' ')),
           number: searchWords(entry.card.card_set_id).replace(/ /g, '')
         };
-      }, (done, total) => {
+      };
+      const progress = (done, total) => {
         if (scannerRun === run && (done % 16 === 0 || done === total)) {
           $('#sig-status').textContent = `Scanning price history (${done} of ${total})…`;
         }
-      });
+      };
+      const result = summary ? { rows: entries.map(entry => evaluate(entry, [])) } :
+        await OQ_HISTORY.scan(entries, evaluate, progress);
       if (scannerRun !== run) return;
       Object.assign(run, result);
+      run.summaryDay = summary?.day;
       renderScannerResults();
-      try {
-        if (trackingUnavailable) throw new Error('Local tracking unavailable');
-        await OQ_HISTORY.saveTrackedCalls(updates);
-        tracked = await OQ_HISTORY.trackedCalls();
-        if (scannerRun === run) renderSignalTracking(tracked);
-      } catch {
-        if (scannerRun === run) $('#sig-tracking').textContent = 'Signal tracking could not access browser storage.';
-      }
+      renderSignalTracking(run);
     } catch (error) {
       if (scannerRun !== run) return;
       run.error = true;
@@ -1663,22 +1709,53 @@
     }
   }
 
-  function renderSignalTracking(tracked) {
+  async function renderSignalTracking(run) {
     const host = $('#sig-tracking');
-    if (!tracked.length) {
-      host.textContent = 'No live Buy or Sell calls recorded in this browser yet.';
-      return;
+    host.textContent = 'Loading forward results…';
+    try {
+      const response = await fetch('./signal-performance.json', { cache: 'no-cache' });
+      if (!response.ok) throw new Error('Report unavailable');
+      const report = await response.json();
+      if (report.version !== 1 || !Array.isArray(report.results)) throw new Error('Unknown report format');
+      if (scannerRun !== run) return;
+      if (!report.trackedDays) {
+        host.textContent = 'Forward tracking starts with the first daily job that observes a new price snapshot.';
+        return;
+      }
+      const pct = value => value == null ? '—' : E.pct(value, 1);
+      const stamp = Math.floor(Date.parse(report.sourceUpdatedAt) / 86400000);
+      host.innerHTML = `<p>Tracking since ${esc(OQ_HISTORY.dateLabel(report.start))} ·
+        ${Number(report.trackedDays)} of ${stamp - Number(report.start) + 1} UTC dates recorded ·
+        Report through ${esc(OQ_HISTORY.dateLabel(stamp))}</p>` +
+        report.results.map(row => `<div class="signal-performance-row">
+          <strong>${esc(signalLabels[row.call])} · ${Number(row.horizon)} days</strong>
+          <p>${Number(row.total)} flags · ${Number(row.pending)} pending · ${Number(row.missing)} without an exact forward quote</p>
+          <p>${Number(row.hits)} of ${Number(row.measured)} moved in the flagged direction across
+            ${Number(row.printings)} printings and ${Number(row.signalDays)} dates. Median market move ${pct(row.medianMove)}.</p>
+          <p>${row.matched ? `${pct(row.matchedHits / row.matched)} vs. ${pct(row.baseline)} for matched peers (${Number(row.matched)} comparisons).` : 'No matched comparison yet.'}
+            ${row.netCount ? `Median modeled ${row.call === 'Buy Now' ? 'resale return' : 'change in net proceeds from waiting'} ${pct(row.medianNet)} (${Number(row.netCount)} observations).` : ''}</p>
+        </div>`).join('');
+    } catch {
+      if (scannerRun === run) host.textContent = 'The forward report is unavailable. It is published by the daily price job.';
     }
-    host.innerHTML = `<p>${tracked.length.toLocaleString()} recorded calls</p>` +
-      [30, 90].map(horizon => `<p><strong>${horizon} days</strong> · ` +
-        ['Buy Now', 'Sell Now'].map(call => {
-          const matching = tracked.filter(row => row.call === call);
-          const measured = matching.filter(row => row.outcomes[horizon] != null);
-          const correct = measured.filter(row => call === 'Buy Now'
-            ? row.outcomes[horizon] > row.market : row.outcomes[horizon] < row.market);
-          return `${call}: ${correct.length} of ${measured.length} moved as flagged` +
-            (matching.length > measured.length ? ` (${matching.length - measured.length} without a forward quote)` : '');
-        }).join(' · ') + '</p>').join('');
+  }
+
+  function scannerExplanation(analysis) {
+    if (!analysis.eligible) return `<span class="small muted">${esc(analysis.reason)}</span>`;
+    const money = cents => E.money(cents / 100, 2);
+    const listRange = rule => `${money(rule.minListing)}–${money(rule.maxListing)} at this Market Price`;
+    const directions = [
+      { name: signalLabels['Buy Now'], rule: analysis.buy, limit: 'or less', trend: '+5% or higher' },
+      { name: signalLabels['Sell Now'], rule: analysis.sell, limit: 'or more', trend: '−5% or lower' }
+    ];
+    return directions.map(({ name, rule, limit, trend }) => {
+      const needs = [];
+      if (!rule.priceMet) needs.push(`Market Price of ${money(rule.price)} ${limit}`);
+      if (!rule.trendMet) needs.push(`30-day trend of ${trend}`);
+      if (!rule.listingMet) needs.push(`listing within ${listRange(rule)}`);
+      return `<span class="small scanner-condition"><strong>${name}</strong>
+        ${needs.length ? 'needs ' + esc(needs.join(' · ')) : 'meets the price, trend, and listing rules.'}</span>`;
+    }).join('');
   }
 
   function renderScannerResults() {
@@ -1698,7 +1775,8 @@
       return;
     }
     const ownedOnly = $('#sig-scope').value === 'owned';
-    const owned = ownedOnly ? new Set(C.livePlaced(S.items, S.cols).map(item => String(item.key))) : null;
+    const owned = ownedOnly ? new Set(C.livePlaced(S.items, S.cols)
+      .map(item => holdingKey(item.key, holdingPrinting(item)))) : null;
     const call = $('#sig-call').value;
     const set = $('#sig-set').value;
     const rarity = $('#sig-rarity').value;
@@ -1711,7 +1789,7 @@
     const filtered = [];
     for (const row of run.rows) {
       const market = row.latest?.[1];
-      if ((owned && (!owned.has(String(row.key)) || row.printing !== row.card.printing)) ||
+      if ((owned && !owned.has(holdingKey(row.key, row.printing))) ||
           (set && row.card.set_id !== set) || (rarity && row.rarity !== rarity) ||
           (Number.isFinite(min) && (market == null || market < Math.round(min))) ||
           (Number.isFinite(max) && (market == null || market > Math.round(max))) ||
@@ -1723,20 +1801,30 @@
       Math.abs(b.analysis.momentum || 0) - Math.abs(a.analysis.momentum || 0) ||
       (b.latest?.[1] || 0) - (a.latest?.[1] || 0) || a.id.localeCompare(b.id));
     counts.innerHTML = scannerOrder.map(label => `<button class="btn market-call" data-call="${esc(label)}"
-      aria-pressed="${label === call}">${esc(label)} · ${totals[label].toLocaleString()}</button>`).join('');
+      aria-pressed="${label === call}">${esc(signalLabels[label])} · ${totals[label].toLocaleString()}</button>`).join('');
     const unavailable = run.unavailable ? ` ${run.unavailable} archive groups could not load.` : '';
     const storage = run.storageUnavailable ? ' Browser snapshots could not load.' : '';
-    status.textContent = `${filtered.length.toLocaleString()} matching printings.` + unavailable + storage;
+    const snapshot = run.summaryDay == null ? '' : ' Daily snapshot ' + OQ_HISTORY.dateLabel(run.summaryDay) + '.';
+    status.textContent = `${filtered.length.toLocaleString()} matching printings.` + snapshot + unavailable + storage;
     const display = filtered.slice(0, scannerLimit);
     results.innerHTML = display.map(row => {
       const { card, analysis, latest } = row;
       const label = [card.card_set_id, card.set_name || setName(card.set_id), row.rarity, row.printing].filter(Boolean).join(' · ');
-      return `<button class="scanner-card" type="button" data-id="${esc(row.id)}">
-        <span class="scanner-card-top"><strong>${esc(card.card_name)}</strong>
-          <span class="market-call" data-call="${esc(analysis.call)}">${esc(analysis.call)}</span></span>
-        <span class="small muted">${esc(label)}</span>
-        <span class="small">${latest ? E.money(latest[1] / 100, 2) + ' · ' + esc(OQ_HISTORY.dateLabel(latest[0])) : 'No recorded quote'}</span>
-        <span class="small muted">${esc(analysis.reason)}</span>
+      return `<button class="scanner-card signal-row" type="button" data-id="${esc(row.id)}">
+        <span class="signal-art">${cardArt(card)}</span>
+        <span class="signal-identity"><strong>${esc(card.card_name)}</strong>
+          <span class="small muted">${esc(label)}</span>
+          <span class="market-call" data-call="${esc(analysis.call)}">${esc(signalLabels[analysis.call])}</span>
+        </span>
+        <span class="signal-quote">
+          <span class="small muted">TCGplayer Market Price</span>
+          <strong>${latest ? E.money(latest[1] / 100, 2) : 'Unavailable'}</strong>
+          <span class="small muted">${latest ? esc(OQ_HISTORY.dateLabel(latest[0])) +
+            (latest[0] < run.today - 3 ? ' · Stale quote' : '') : 'No recorded quote'}</span>
+          ${latest?.[2] > 0 ? `<span class="small">Low listing ${E.money(latest[2] / 100, 2)}</span>` : ''}
+          ${analysis.momentum != null ? `<span class="small">30-day trend ${analysis.momentum > 0 ? '+' : ''}${E.pct(analysis.momentum, 2)}</span>` : ''}
+        </span>
+        <span class="signal-rules">${scannerExplanation(analysis)}</span>
       </button>`;
     }).join('') || '<p class="muted">No printings match these filters.</p>';
     more.hidden = filtered.length <= scannerLimit;
@@ -1779,15 +1867,15 @@
     const input = $('#data-url');
     if (!input) return;
     input.value = localStorage.getItem(DATA_URL_KEY) || '';
+    if (SRC.defaultBase !== './mockapi') input.placeholder = SRC.defaultBase;
 
     const state = $('#src-state');
     if (!state) return;
     if (SRC.isMock()) {
       state.innerHTML = '<span class="tag est">local snapshot</span>';
-      state.title = 'No Worker configured — reading the development snapshot in mockapi/, ' +
-                    'which is not deployed. Set a Worker URL for live prices.';
+      state.title = 'Reading the local development snapshot in mockapi/. Set a Worker URL for live prices.';
     } else {
-      state.innerHTML = '<span class="tag" style="color:var(--up);border-color:#2a6b4a">live</span>';
+      state.innerHTML = '<span class="tag">Worker feed</span>';
       state.title = SRC.base();
     }
   }
@@ -2001,22 +2089,15 @@
         }
       }
     }
-    if (changed) saveCritical(KEY.cols, S.cols);
+    return changed;
   }
 
-  /* Merge duplicate permanent binders, then persist.
-
-     Has to run after a PULL as well as at boot: the duplicates arrive from the
-     sheet, so a boot-only fix would clean this device and then re-import the
-     mess on the next sync. Merged rows are stamped so the collapse propagates
-     to every other device instead of each one fixing itself locally. */
+  /* Consolidate duplicate permanent binders from older versions. */
   function collapsePermanent(reason) {
     const res = C.dedupePermanent(S.cols, S.items);
     if (!res.mergedBinders) return 0;
     S.cols = res.cols;
     S.items = res.items;
-    saveCritical(KEY.cols, S.cols);
-    saveCritical(KEY.items, S.items);
     console.info('[optcg] merged duplicate permanent binders', {
       reason, binders: res.mergedBinders, itemsMoved: res.movedItems });
     S.binderMerge = { at: Date.now(), binders: res.mergedBinders, items: res.movedItems };
@@ -2054,7 +2135,7 @@
       <div class="note ${stuck ? 'warn' : ''} small" style="margin-bottom:14px">
         <b>Collection updated for v2.</b>
         ${r.migrated ? `${r.migrated} row${r.migrated === 1 ? '' : 's'} repointed to the new
-          card ids and queued for the next Sheets push.` : ''}
+          card ids.` : ''}
         ${stuck ? `<br><b>${stuck} row${stuck === 1 ? '' : 's'} could not be matched</b> and
           ${stuck === 1 ? 'was' : 'were'} left exactly as ${stuck === 1 ? 'it was' : 'they were'} —
           nothing was deleted. ${r.ambiguous ? `${r.ambiguous} matched more than one card. ` : ''}
@@ -2105,11 +2186,61 @@
     });
   }
 
+  let collectionHistoryRun;
+
+  function renderCollectionHistory(items) {
+    const holdings = new Map();
+    for (const item of items) {
+      const card = S.byKey[item.key];
+      const qty = C.qtyOf(item);
+      const printing = holdingPrinting(item, card);
+      if (!card || !qty || printing == null || C.isGraded(item) || (item.cond && item.cond !== 'NM')) continue;
+      const key = holdingKey(card.id, printing);
+      const row = holdings.get(key) || { card, printing, qty: 0 };
+      row.qty += qty;
+      holdings.set(key, row);
+    }
+    const copies = items.reduce((sum, item) => sum + C.qtyOf(item), 0);
+    const day = Math.floor(Date.now() / 86400000);
+    const signature = JSON.stringify([day, copies, [...holdings.values()]
+      .map(row => [row.card.id, row.printing, row.qty]).sort()]);
+    if (collectionHistoryRun?.signature === signature && collectionHistoryRun.catalog === S.byKey) return;
+
+    const run = { signature, catalog: S.byKey };
+    collectionHistoryRun = run;
+    const chart = $('#col-history');
+    const coverage = $('#col-history-coverage');
+    coverage.textContent = '';
+    const pending = Promise.resolve(S.historyWrite).then(() => OQ_HISTORY.scan([...holdings.values()], (row, points) => ({
+      ...row, points, signal: OQ_MARKET.analyze(points, day)
+    }), () => {})).then(result => {
+      const history = C.holdingHistory(result.rows);
+      if (collectionHistoryRun === run) {
+        run.signals = new Map(result.rows.map(row => [holdingKey(row.card.id, row.printing), row.signal]));
+        run.partial = result.unavailable > 0 || result.storageUnavailable;
+        coverage.textContent = copies
+          ? `${history.copies.toLocaleString()} of ${copies.toLocaleString()} copies tracked. The chart uses today’s raw near-mint quantities and TCGplayer market references for each finish. A day appears when every tracked finish has a quote.`
+          : '';
+        refreshCollectionSignals();
+      }
+      return {
+        ...history, archiveUnavailable: result.unavailable > 0, storageUnavailable: result.storageUnavailable,
+        emptyMessage: !copies ? 'Add cards to start tracking your collection.' :
+          !history.points.length ? 'No common price dates for your tracked holdings yet.' : ''
+      };
+    });
+    OQ_HISTORY.holdingsChart(chart, pending).catch(() => {
+      if (collectionHistoryRun !== run) return;
+      run.signals = new Map();
+      run.partial = true;
+      chart.querySelector('[role="status"]').textContent = 'Could not load collection history.';
+      refreshCollectionSignals();
+    });
+  }
+
   function renderCollection() {
-    ensureCollections();
     const col = currentCol();
     renderBinders();
-    renderSyncPanel();
     renderMigrationReport();
 
     // ---- headline numbers across every binder
@@ -2119,10 +2250,6 @@
     const placed = C.livePlaced(S.items, S.cols);
     renderStranded(C.orphans(S.items, S.cols));
     const all = C.valueOf(placed, priceForKey);
-    const keepIds  = liveCols().filter(c => c.kind === 'keep').map(c => c.id);
-    const tradeIds = liveCols().filter(c => c.kind === 'trade').map(c => c.id);
-    const keep  = C.valueOf(placed.filter(i => keepIds.indexOf(i.colId) > -1), priceForKey);
-    const trade = C.valueOf(placed.filter(i => tradeIds.indexOf(i.colId) > -1), priceForKey);
 
     // Trade stock valued at what a vendor would actually give for it. Each
     // binder carries its own rate because not every buyer offers the same.
@@ -2131,22 +2258,21 @@
       if (c.kind !== 'trade') continue;
       tradeAtRate += C.valueOf(itemsIn(c.id), priceForKey).total * (C.rateOf(c) / 100);
     }
-    const blendedRate = trade.total > 0 ? Math.round(tradeAtRate / trade.total * 100) : null;
+    const gain = (all.gain > 0 ? '+' : all.gain < 0 ? '−' : '') + E.money(Math.abs(all.gain), 2);
 
     $('#col-stats').innerHTML =
-      stat('Total value', E.money(all.total), `${all.cards.toLocaleString()} cards at market`, 'hero') +
-      stat('Keeping', E.money(keep.total), `${keep.cards.toLocaleString()} cards`) +
-      stat('Trade / Sell', E.money(tradeAtRate),
-           trade.total > 0
-             ? `${E.money(trade.total)} market · at ${blendedRate}%`
-             : `${trade.cards.toLocaleString()} cards`) +
-      stat('Spent', all.cost > 0 ? E.money(all.cost) : '—',
-           all.cost > 0
-             ? `${all.gain >= 0 ? 'up' : 'down'} ${E.money(Math.abs(all.gain))}` +
-               `${all.gainPct != null ? ' (' + E.pct(all.gainPct, 0) + ')' : ''}` +
-               `${all.costComplete ? '' : ` · on ${all.costedCards} of ${all.cards} cards`}`
-             : 'add what you paid to track this');
+      stat('Collection reference value', all.cards > all.unpriced ? E.money(all.total, 2) : '—',
+        `${all.cards.toLocaleString()} copies${all.unpriced ? ` · ${all.unpriced.toLocaleString()} unpriced` : ''}`, 'hero') +
+      stat('Recorded cost', all.costedCards ? E.money(all.cost, 2) : '—',
+        `${all.costedCards.toLocaleString()} of ${all.cards.toLocaleString()} copies`) +
+      stat('Unrealized gain / loss', all.comparableCards ? gain : '—',
+        all.comparableCards
+          ? `${all.comparableCards.toLocaleString()} of ${all.cards.toLocaleString()} copies` +
+            (all.gainPct == null ? '' : ` · ${all.gainPct > 0 ? '+' : ''}${E.pct(all.gainPct, 1)}`)
+          : 'Requires a value and recorded cost', all.gain > 0 ? 'collection-up' : all.gain < 0 ? 'collection-down' : '') +
+      stat('Estimated trade value', E.money(tradeAtRate, 2), 'At your binder trade rates');
 
+    renderCollectionHistory(placed);
     renderAddGrid();
     renderScoreboard();
     renderColTable(col);
@@ -2313,6 +2439,9 @@
 
   /* ---- tap-to-add grid --------------------------------------------------- */
   function renderAddGrid() {
+    const col = currentCol();
+    $('#add-target').textContent = col ? 'adding to ' + col.name : '';
+    if (!$('.collection-add').open) return;
     // Collections include everything you can own, not just what you can pull.
     const sets = browseSets();
     if (!S.addSet || !sets.some(s => s.id === S.addSet)) {
@@ -2333,9 +2462,6 @@
       sel.dataset.filled = '1';
     }
 
-    const col = currentCol();
-    $('#add-target').textContent = col ? 'adding to ' + col.name : '';
-
     const min = Number($('#add-min').value) || 0;
     const q = S.addSearch.trim().toLowerCase();
 
@@ -2354,12 +2480,11 @@
       pool = pool.slice(0, 200);
     }
 
-    // In THIS binder = tap removes. In another binder = worth knowing, but the
-    // tap still adds here. Conflating the two made the toggle unpredictable.
     const here = {}, elsewhere = {};
     for (const it of C.live(S.items)) {
-      if (it.colId === (col && col.id)) here[it.key] = (here[it.key] || 0) + (Number(it.qty) || 0);
-      else elsewhere[it.key] = true;
+      if (it.colId === col?.id) {
+        if (isQuickAddItem(it)) here[it.key] = (here[it.key] || 0) + 1;
+      } else elsewhere[it.key] = true;
     }
 
     $('#add-grid').innerHTML = pool.slice(0, 120).map(e => {
@@ -2379,26 +2504,25 @@
     fitGridRows('#add-grid', 3);
   }
 
-  /**
-   * Toggle, not increment. Tapping a card adds it once; tapping again removes
-   * it. Quantity is edited in the table, deliberately — a mis-aimed tap on a
-   * grid of 120 images should never silently inflate a count you cannot see.
-   *
-   * Only ever touches the plain raw row. A graded or condition-flagged copy of
-   * the same card is a separate record and is left alone.
-   */
+  function isQuickAddItem(item) {
+    const card = S.byKey[item.key];
+    return card && holdingPrinting(item, card) === card.printing &&
+      item.cond === 'NM' && !item.grader && C.qtyOf(item) === 1 &&
+      C.amount(item.paid) == null && C.amount(item.value) == null && !item.note;
+  }
+
   function toggleCard(key) {
     const col = currentCol();
     if (!col) return;
     const hit = C.live(S.items).find(it =>
-      it.colId === col.id && it.key === key && !it.grader && it.cond === 'NM');
+      it.colId === col.id && String(it.key) === key && isQuickAddItem(it));
 
     if (hit) { hit.deleted = 1; hit.updatedAt = Date.now(); }
     else {
       // Promos, starter decks and event cards cannot be pulled from a pack, so
       // they must not default to "pulled" — that would credit a $3,499
       // Regionals card you bought as ripping profit in the scoreboard.
-      S.items.push(C.newItem(col.id, key, { src: isPullable(key) ? 'pull' : 'buy' }));
+      S.items.push(C.newItem(col.id, key, { printing: S.byKey[key]?.printing, src: isPullable(key) ? 'pull' : 'buy' }));
     }
 
     persistCollection();
@@ -2406,15 +2530,58 @@
   }
 
   /* ---- the binder table -------------------------------------------------- */
+  function isSellNow(item) {
+    return C.qtyOf(item) > 0 && !C.isGraded(item) && (!item.cond || item.cond === 'NM') &&
+      collectionHistoryRun?.signals?.get(holdingKey(item.key, holdingPrinting(item)))?.call === 'Sell Now';
+  }
+
+  function renderCollectionSignals(items) {
+    const button = $('#col-sell');
+    const selling = items.filter(isSellNow);
+    const count = new Set(selling.map(item => holdingKey(item.key, holdingPrinting(item)))).size;
+    button.textContent = collectionHistoryRun?.signals ? `Review for sale (${count})` : signalLabels['Sell Now'];
+    button.disabled = !collectionHistoryRun?.signals || !items.length;
+    $('#col-signal-status').textContent = items.length
+      ? collectionHistoryRun?.partial ? 'Some signals are unavailable.' :
+        !collectionHistoryRun?.signals ? 'Checking market signals…' : ''
+      : '';
+    const eligible = new Set(selling.map(item => String(item.id)));
+    $$('[data-sell-badge]', $('#view-collection')).forEach(badge => { badge.hidden = !eligible.has(badge.dataset.sellBadge); });
+  }
+
+  function refreshCollectionSignals() {
+    if (S.tab !== 'collection') return;
+    const col = currentCol();
+    if ($('#col-sell').getAttribute('aria-pressed') === 'true') renderColTable(col);
+    else renderCollectionSignals(col ? itemsIn(col.id) : []);
+  }
+
   function renderColTable(col) {
     const tbody = $('#col-tbl tbody');
-    if (!col) { tbody.innerHTML = ''; return; }
+    const gallery = $('#binder-gallery');
+    if (!col) { tbody.innerHTML = gallery.innerHTML = ''; return; }
 
-    const rows = itemsIn(col.id).slice().sort((a, b) => {
-      const pa = priceForKey(a.key) || 0, pb = priceForKey(b.key) || 0;
-      return (pb * (b.qty || 0)) - (pa * (a.qty || 0));
+    const items = itemsIn(col.id);
+    const query = searchWords($('#col-query').value);
+    const tokens = query ? query.split(' ') : [];
+    const sort = $('#col-sort').value;
+    const sellOnly = $('#col-sell').getAttribute('aria-pressed') === 'true';
+    const rows = items.filter(item => {
+      if (sellOnly && !isSellNow(item)) return false;
+      if (!query) return true;
+      const card = S.byKey[item.key];
+      const number = searchWords(card?.card_set_id).replace(/ /g, '');
+      const search = searchWords(card?.card_name || item.key);
+      return number.startsWith(tokens.join('')) || tokens.every(token => (search + ' ' + number).includes(token));
+    }).map(it => ({
+      it, card: S.byKey[it.key], qty: C.qtyOf(it), each: C.unitValue(it, priceForKey)
+    })).sort((a, b) => {
+      const byName = () => String(a.card?.card_name || a.it.key).localeCompare(String(b.card?.card_name || b.it.key));
+      if (sort === 'name') return byName();
+      if (sort === 'qty') return b.qty - a.qty || byName();
+      return (b.each ?? -1) * b.qty - (a.each ?? -1) * a.qty || byName();
     });
-    const v = C.valueOf(itemsIn(col.id), priceForKey);
+    const v = C.valueOf(items, priceForKey);
 
     // Binders this card could move to. Deciding to sell something you kept is
     // routine, and the delete-and-re-add workaround destroyed seven fields —
@@ -2427,25 +2594,51 @@
 
     $('#col-title').textContent = col.name;
     $('#col-sub').innerHTML =
-      `${v.cards} cards · ${traded ? '' : '<b>'}${E.money(v.total)}${traded ? ' market' : '</b>'}` +
+      `${v.cards} cards · ${traded ? '' : '<b>'}${E.money(v.total)}${traded ? ' reference' : '</b>'}` +
       (traded ? ` · <b style="color:var(--brass)">${E.money(v.total * rate / 100)} at ${rate}%</b>` : '') +
       (v.unpriced ? ` · <span class="muted">${v.unpriced} unpriced</span>` : '');
+    $('#col-price-source').textContent = ['Raw values use market references across conditions. Manual values override them.',
+      catalogDate()].filter(Boolean).join(' ');
 
-    tbody.innerHTML = rows.map(it => {
-      const card = S.byKey[it.key];
+    gallery.innerHTML = rows.map(({ it, card, each, qty }) => {
+      const title = esc(card?.card_name || it.key);
+      const state = C.isGraded(it) ? [it.grader, it.grade].join(' ') : it.cond;
+      const printing = holdingPrinting(it, card);
+      const finishLabel = printing == null && card?.alt_printing
+        ? 'Confirm finish in Edit' : printing || 'Finish unavailable';
+      return `<article class="binder-card">
+        ${card ? `<button class="binder-art" type="button" data-key="${esc(it.key)}" data-printing="${esc(printing)}" aria-label="View ${title}">${cardArt(card)}</button>`
+          : '<div class="binder-art noart"><span>No card artwork</span></div>'}
+        <div class="binder-card-info"><strong>${title}</strong>
+          <span class="small muted">${esc(finishLabel)} · ${esc(state || 'Raw')} · ${qty} ${qty === 1 ? 'copy' : 'copies'}</span>
+          <b>${each == null ? 'Unpriced' : E.money(each * qty, 2)}</b>
+          <span class="market-call" data-call="Sell Now" data-sell-badge="${esc(it.id)}" hidden>Review for sale</span>
+        </div>
+      </article>`;
+    }).join('') || '<p class="catalog-empty">' + (items.length ? 'No cards match these filters.' : 'This binder is empty. Find cards to start your collection.') + '</p>';
+
+    tbody.innerHTML = rows.map(({ it, card, each, qty }) => {
       const graded = C.isGraded(it);
-      const manual = it.value != null && it.value !== '';
-      // Graded copies have no feed, so they show an input until you value them.
-      const each = manual ? Number(it.value) : (graded ? null : priceForKey(it.key));
-      const qty = Number(it.qty) || 0;
+      const manual = C.amount(it.value);
+      const printing = holdingPrinting(it, card);
+      const finishes = [card?.printing, card?.alt_printing?.printing].filter(Boolean);
       return `<tr data-id="${esc(it.id)}">
         <td><div class="cardcell">
-          <img src="${esc(card ? card.card_image : '')}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
-          <div class="nm"><b>${esc(card ? card.card_name : it.key)}</b>
-            <span>${esc(card ? card.card_set_id : '')}</span></div>
+          ${card?.card_image ? `<img src="${esc(card.card_image)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : ''}
+          <div class="nm">${card ? `<button type="button" class="collection-card-link" data-key="${esc(it.key)}" data-printing="${esc(printing)}">${esc(card.card_name)}</button>` : `<b>${esc(it.key)}</b>`}
+            <span>${esc(card ? card.card_set_id : '')}</span>
+            <button type="button" class="market-call collection-card-sell" data-call="Sell Now"
+              data-sell-badge="${esc(it.id)}" data-key="${esc(it.key)}" data-printing="${esc(printing)}" hidden>Review for sale</button></div>
         </div></td>
         <td data-l="Set"><span class="tag">${esc(card ? setShort(card.set_id) : '—')}</span></td>
         <td data-l="State">
+          ${finishes.length > 1 || printing && !finishes.includes(printing)
+            ? `<select class="it-printing" data-id="${esc(it.id)}" aria-label="Finish">
+                 <option value="" disabled${printing ? '' : ' selected'}>Confirm finish</option>
+                 ${printing && !finishes.includes(printing) ? `<option selected disabled>${esc(printing)} · unavailable</option>` : ''}
+                 ${finishes.map(finish => `<option value="${esc(finish)}"${printing === finish ? ' selected' : ''}>${esc(finish)}</option>`).join('')}
+               </select>`
+            : printing ? `<span class="small muted">${esc(printing)}</span>` : ''}
           <select class="it-grader" data-id="${esc(it.id)}" style="width:auto;display:inline-block;padding:4px 6px;font-size:12px">
             <option value="">Raw</option>
             ${D.GRADERS.map(g => `<option value="${g}"${it.grader === g ? ' selected' : ''}>${g}</option>`).join('')}
@@ -2461,17 +2654,17 @@
         </td>
         <td class="num" data-l="Qty"><input type="number" class="it-qty" data-id="${esc(it.id)}" min="0" step="1"
              value="${qty}" style="width:62px;text-align:right;padding:4px 6px;font-size:12px"></td>
-        <td class="num" data-l="Each">${graded || manual
+        <td class="num" data-l="Each">${graded || manual != null
             ? `<input type="number" class="it-value" data-id="${esc(it.id)}" min="0" step="0.01"
-                 placeholder="${graded ? 'graded $' : 'market'}" value="${manual ? it.value : ''}"
+                 placeholder="${graded ? 'graded $' : 'market'}" value="${manual ?? ''}"
                  style="width:88px;text-align:right;padding:4px 6px;font-size:12px"
                  title="${graded ? 'No free feed for graded prices — enter what it is worth' : 'Overrides the live market price'}">`
-            : E.money(each)}</td>
+            : each == null ? '—' : E.money(each, 2)}</td>
         <td class="num" data-l="Paid ea."><input type="number" class="it-paid" data-id="${esc(it.id)}" min="0" step="0.01"
-             placeholder="—" value="${it.paid == null ? '' : it.paid}"
+             placeholder="—" value="${C.amount(it.paid) ?? ''}"
              style="width:80px;text-align:right;padding:4px 6px;font-size:12px"
              title="What you paid, per copy"></td>
-        <td class="num" data-l="Value"><b>${each == null ? '—' : E.money(each * qty)}</b></td>
+        <td class="num" data-l="Value"><b>${each == null ? '—' : E.money(each * qty, 2)}</b></td>
         <td class="num acts" data-l="">
           <select class="it-src" data-id="${esc(it.id)}" title="Pulled cards count as winnings in the scoreboard"
                   style="width:auto;display:inline-block;padding:4px 6px;font-size:12px">
@@ -2486,8 +2679,10 @@
           </select>` : ''}
           <button class="btn ghost small it-del" data-id="${esc(it.id)}">×</button></td>
       </tr>`;
-    }).join('') || `<tr><td colspan="8" class="muted">
-        No cards yet — tap one from the grid above.</td></tr>`;
+    }).join('') || `<tr><td colspan="8" class="muted">${!items.length
+      ? 'This binder is empty. Find cards to add or open Quick add.'
+      : sellOnly && !collectionHistoryRun?.signals ? 'Checking market signals…' : 'No cards match these filters.'}</td></tr>`;
+    renderCollectionSignals(items);
 
     const find = id => S.items.find(x => x.id === id);
     const touch = it => { it.updatedAt = Date.now(); persistCollection(); renderCollection(); };
@@ -2516,6 +2711,10 @@
     $$('.it-cond').forEach(el => el.addEventListener('change', () => {
       const it = find(el.dataset.id); if (!it) return;
       it.cond = el.value; touch(it);
+    }));
+    $$('.it-printing').forEach(el => el.addEventListener('change', () => {
+      const it = find(el.dataset.id); if (!it || !el.value) return;
+      it.printing = el.value; touch(it);
     }));
     $$('.it-grader').forEach(el => el.addEventListener('change', () => {
       const it = find(el.dataset.id); if (!it) return;
@@ -2546,17 +2745,17 @@
       const dest = el.value;
       if (!it || !dest) return;
 
-      // If the destination already holds this exact card in the same state,
-      // fold the quantities together instead of leaving two identical rows.
+      // Preserve distinct purchase lots, valuations and notes.
       const twin = C.live(S.items).find(x =>
-        x.id !== it.id && x.colId === dest && x.key === it.key &&
+        x.id !== it.id && x.colId === dest && String(x.key) === String(it.key) &&
+        holdingPrinting(it) != null && holdingPrinting(x) === holdingPrinting(it) &&
         x.cond === it.cond && x.grader === it.grader &&
-        String(x.grade) === String(it.grade) && x.src === it.src);
+        String(x.grade) === String(it.grade) && x.src === it.src &&
+        C.amount(x.paid) === C.amount(it.paid) && C.amount(x.value) === C.amount(it.value) &&
+        (x.note || '') === (it.note || '') && C.qtyOf(x) + C.qtyOf(it) <= MAX_QTY);
 
       if (twin) {
-        twin.qty = (Number(twin.qty) || 0) + (Number(it.qty) || 0);
-        // Keep a cost basis if only one side had one; sum when both do.
-        if (it.paid != null) twin.paid = (twin.paid != null) ? twin.paid : it.paid;
+        twin.qty = C.qtyOf(twin) + C.qtyOf(it);
         twin.updatedAt = Date.now();
         it.deleted = 1;
         it.updatedAt = Date.now();
@@ -2573,172 +2772,125 @@
     }));
   }
 
-  /* ---- persistence + sync ------------------------------------------------ */
+  /* ---- persistence and backup -------------------------------------------- */
   function persistCollection() {
-    saveCritical(KEY.cols, S.cols);
-    saveCritical(KEY.items, S.items);
-    saveCritical(KEY.opens, S.opens);
-    schedulePush();
-  }
-
-  function setSync(state, msg) {
-    S.syncState = state; S.syncMsg = msg || '';
-    const chip = $('#sync-chip');
-    if (chip) chip.innerHTML =
-      `<span class="sync-dot ${state === 'ok' ? 'on' : state === 'busy' ? 'busy' : state === 'err' ? 'err' : ''}"></span>
-       <span>${esc(msg || (state === 'off' ? 'Sheets off' : state))}</span>`;
-    const p = $('#sync-state');
-    if (p) p.textContent = msg || state;
-  }
-
-  function schedulePush() {
-    if (!S.syncUrl) return;
-    clearTimeout(S.pushTimer);
-    // Debounced: typing a quantity should not fire a write per keystroke.
-    S.pushTimer = setTimeout(pushNow, 2500);
-  }
-
-  /**
-   * Push only what changed.
-   *
-   * This used to send the ENTIRE collection on every debounced save, and the
-   * Apps Script rewrote every row it already had. Editing one quantity in a
-   * 200-card binder meant 200 sheet writes. Rows are now filtered to those
-   * touched since the last confirmed push.
-   */
-  async function pushNow(force) {
-    if (!S.syncUrl) return;
-
-    // The manual "Save now" button forces a full resend — otherwise clicking it
-    // when nothing is dirty would report "up to date" and look broken.
-    const since = force ? 0 : (S.lastPushAt || 0);
-    const dirty = rs => rs.filter(r => (r.updatedAt || 0) > since);
-    const payload = {
-      collections: dirty(S.cols),
-      items: dirty(S.items),
-      opens: dirty(S.opens)
-    };
-    const count = payload.collections.length + payload.items.length + payload.opens.length;
-    if (!count) { setSync('ok', 'up to date'); return; }
-
-    setSync('busy', `saving ${count}…`);
-    // Stamped before the request: anything edited mid-flight keeps a newer
-    // updatedAt and is caught by the next push rather than being skipped.
-    const stamp = Date.now();
-    try {
-      await C.push(S.syncUrl, payload);
-      S.lastPushAt = stamp;
-      save(KEY.lastPush, stamp);
-      setSync('ok', 'saved');
-    } catch (err) {
-      setSync('err', err.message);
+    const disk = collectionState();
+    const rows = {};
+    for (const key of collectionFields) {
+      const before = new Map(committedCollection.rows[key].map(row => [row.id, JSON.stringify(row)]));
+      const changed = S[key].filter(row => before.get(row.id) !== JSON.stringify(row));
+      rows[key] = C.mergeRows(changed, disk.rows[key]);
     }
-  }
-
-  /**
-   * Drop tombstones nobody needs any more.
-   *
-   * Deleted rows must linger or they resurrect from a device that has not
-   * synced yet — but "not synced in three months" is not a scenario worth
-   * carrying forever, and without this every deletion is permanent payload.
-   */
-  function compactTombstones() {
-    const cutoff = Date.now() - 90 * 86400000;
-    const keep = r => !r.deleted || (r.updatedAt || 0) > cutoff;
-    const before = S.items.length + S.cols.length + S.opens.length;
-    S.items = S.items.filter(keep);
-    S.cols  = S.cols.filter(keep);
-    S.opens = S.opens.filter(keep);
-    const after = S.items.length + S.cols.length + S.opens.length;
-    if (after !== before) {
-      save(KEY.items, S.items); save(KEY.cols, S.cols); save(KEY.opens, S.opens);
+    const next = { rows, watch: userRecords(disk, 'watch'), comps: userRecords(disk, 'comps') };
+    if (!writeCollection(next)) {
+      applyCollection(disk);
+      alert('Your collection change could not be saved. Free up browser storage and try again.');
+      return false;
     }
+    applyCollection(next);
+    return true;
   }
 
-  async function pullNow(silent) {
-    if (!S.syncUrl) return;
-    setSync('busy', 'loading…');
-    try {
-      const remote = await C.pull(S.syncUrl);
-      S.cols  = C.mergeRows(S.cols, remote.collections);
-      S.items = C.mergeRows(S.items, remote.items);
-      S.opens = C.mergeRows(S.opens, remote.opens);
-      save(KEY.cols, S.cols); save(KEY.items, S.items); save(KEY.opens, S.opens);
-      // The sheet is where duplicates come from, so collapse after every pull.
-      ensureCollections();
-      collapsePermanent('pull');
-      setSync('ok', 'synced');
-      if (!silent) renderCollection();
-      else if (S.tab === 'collection') renderCollection();
-      if (S.tab === 'signals') renderScannerResults();
-      if ($('#catalog-dialog').open) renderCatalogCard();
-    } catch (err) {
-      setSync('err', err.message);
+  function writeCollection(snapshot) {
+    snapshot.backupId = collectionState().backupId || C.uid();
+    if (!save(KEY.collection, snapshot)) {
+      try { localStorage.removeItem(KEY.cards); } catch (_) {}
+      if (!save(KEY.collection, snapshot)) return false;
     }
+    // The original keys remain readable until the replacement is durable.
+    for (const key of [...collectionFields, 'watch', 'comps']) {
+      try { localStorage.removeItem(KEY[key]); } catch (_) {}
+    }
+    backup.change();
+    return true;
   }
 
-  function renderSyncPanel() {
-    const body = $('#sync-panel');
-    if (!body) return;
-    body.innerHTML = `
-      <div class="note small" style="margin-bottom:12px">
-        Your collection saves to a Google Sheet you own, so it survives a cleared browser
-        and follows you across devices. The repo is public, so the script URL is
-        <b>not baked into the code</b> — paste it once per browser. Treat it like a
-        password: anyone with the URL can read and write your sheet.
-      </div>
-      <label class="fld"><span>Apps Script /exec URL</span>
-        <input type="text" id="sync-url" placeholder="https://script.google.com/macros/s/…/exec"
-               value="${esc(S.syncUrl)}"></label>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-        <button class="btn primary" id="sync-save">Connect</button>
-        <button class="btn" id="sync-test">Test connection</button>
-        <button class="btn" id="sync-pull"${S.syncUrl ? '' : ' disabled'}>Load from Sheet</button>
-        <button class="btn" id="sync-push"${S.syncUrl ? '' : ' disabled'}>Save now</button>
-      </div>
-      <div class="small muted" id="sync-state">${esc(S.syncMsg || S.syncState)}</div>
-      <div id="sync-diag" style="margin-top:10px"></div>
-      <details class="adv" style="margin-top:12px">
-        <summary>How to set the sheet up</summary>
-        <div class="small muted" style="line-height:1.65;padding:4px 2px">
-          1. New Google Sheet, leave it empty.<br>
-          2. Extensions → Apps Script, paste in <code>apps-script.js</code> from this project, save.<br>
-          3. Deploy → New deployment → Web app. Execute as <b>Me</b>, access <b>Anyone</b>.<br>
-          4. Copy the <code>/exec</code> URL and paste it above.<br><br>
-          "Anyone" is safe only because the URL is unguessable — treat it like a password.
-          If it ever leaks, redeploy for a fresh one.
-        </div>
-      </details>`;
+  function applyCollection(snapshot) {
+    committedCollection = snapshot;
+    Object.assign(S, structuredClone(snapshot.rows));
+  }
 
-    $('#sync-save').addEventListener('click', async () => {
-      const url = $('#sync-url').value.trim();
-      if (url && !C.validUrl(url)) { setSync('err', 'Not a script.google.com URL'); return; }
-      S.syncUrl = url; save(KEY.sync, url);
-      if (!url) { setSync('off', 'Sheets off'); return; }
-      // Pull first so connecting a populated sheet never clobbers it with an
-      // empty local copy — merge is per row, so both sides survive.
-      await pullNow(false);
-      await pushNow(true);
-      renderCollection();
+  function saveUserRecords(name, rows) {
+    const disk = collectionState();
+    return writeCollection({ rows: disk.rows, watch: userRecords(disk, 'watch'),
+      comps: userRecords(disk, 'comps'), [name]: rows });
+  }
+
+  function renderBackupStatus({ state, message, last, filename }) {
+    $('#backup-status').textContent = filename ? message + ' ' + filename : message;
+    const detail = $('#backup-last');
+    detail.hidden = !last;
+    if (last) detail.textContent = 'Last backed up ' + new Date(last).toLocaleString();
+    const connect = $('#backup-connect');
+    connect.hidden = !backup.supported || state === 'saving';
+    connect.textContent = filename ? 'Choose backup file' : 'Enable automatic backup';
+    $('#backup-reconnect').hidden = state !== 'permission' || !filename;
+    $('#backup-download').hidden = backup.supported && !['permission', 'error'].includes(state);
+    const chip = $('#backup-chip');
+    const labels = { ready: 'Backup on', saving: 'Backing up', permission: 'Backup paused', error: 'Backup paused' };
+    const dot = { ready: 'on', saving: 'busy', permission: 'err', error: 'err' };
+    chip.hidden = !labels[state];
+    chip.innerHTML = labels[state] ? `<span class="sync-dot ${dot[state]}"></span><span>${labels[state]}</span>` : '';
+  }
+
+  function wireBackup() {
+    const input = $('#backup-file');
+    const preview = $('#backup-preview');
+    const status = $('#backup-restore-status');
+    let selection = 0;
+    let candidate;
+    function clearPreview() {
+      selection++;
+      candidate = null;
+      preview.hidden = true;
+      status.textContent = '';
+    }
+    on('#backup-connect', 'click', backup.connect);
+    on('#backup-reconnect', 'click', backup.reconnect);
+    on('#backup-download', 'click', backup.download);
+    on('#backup-restore', 'click', () => input.click());
+    on('#backup-cancel', 'click', () => {
+      clearPreview();
+      $('#backup-restore').focus();
     });
-    $('#sync-pull').addEventListener('click', () => pullNow(false));
-    $('#sync-push').addEventListener('click', () => pushNow(true));
-
-    $('#sync-test').addEventListener('click', async () => {
-      const btn = $('#sync-test'), out = $('#sync-diag');
-      const url = ($('#sync-url').value || '').trim();
-      btn.disabled = true; btn.textContent = 'Testing…';
-      out.innerHTML = `<div class="small muted">Checking…</div>`;
-      const d = await C.diagnose(url);
-      btn.disabled = false; btn.textContent = 'Test connection';
-      out.innerHTML = `
-        <div class="note ${d.ok ? '' : 'warn'} small">
-          <strong>${d.ok ? '✓ ' : '✕ '}${esc(d.msg)}</strong>
-          ${d.fix ? `<div style="margin-top:6px">${esc(d.fix)}</div>` : ''}
-          <div class="muted" style="margin-top:6px;font-family:var(--mono);font-size:11px">
-            code: ${esc(d.code)}</div>
-        </div>`;
+    on(input, 'change', async () => {
+      const file = input.files[0];
+      input.value = '';
+      clearPreview();
+      if (!file) return;
+      const attempt = selection;
+      try {
+        const data = await OQ_BACKUP.readFile(file);
+        if (attempt !== selection) return;
+        candidate = data;
+        const copies = C.live(data.items).reduce((sum, item) => sum + C.qtyOf(item), 0);
+        $('#backup-preview-text').textContent = `Replace this device’s saved data with ${C.live(data.cols).length} binders, ` +
+          `${copies.toLocaleString()} card copies, ${C.live(data.opens).length} opening entries, ` +
+          `${data.watch.length} watch targets, and ${data.comps.length} eBay sales?`;
+        preview.hidden = false;
+        $('#backup-cancel').focus();
+      } catch (error) {
+        if (attempt === selection) status.textContent = error instanceof SyntaxError
+          ? 'This is not a readable JSON backup.' : error.message;
+      }
     });
+    on('#backup-apply', 'click', () => {
+      if (!candidate) return;
+      const { watch, comps, ...rows } = candidate;
+      const next = { rows, watch, comps };
+      if (!writeCollection(next)) {
+        status.textContent = 'Restore could not be saved. Free up browser storage and try again.';
+        return;
+      }
+      applyCollection(next);
+      S.curCol = null;
+      clearPreview();
+      status.textContent = 'Backup restored on this device.';
+      $('#backup-restore').focus();
+    });
+    if (!backup.supported) {
+      renderBackupStatus({ state: 'unsupported', message: 'Use Download backup to save a copy in this browser.' });
+    }
   }
 
   /* ========================================================= COLLAPSING ==
@@ -2797,11 +2949,321 @@
   /* ============================================================= CATALOG == */
 
   const CATALOG_PAGE = 48;
+  const featuredPrintings = ['453506', '454666', '453509'];
   const catalogFilters = ['set', 'rarity', 'type', 'color'];
   let catalogLimit = CATALOG_PAGE;
   let catalogCardKey = null;
   let catalogHistoryKey = null;
   let catalogPrinting;
+  let compsKey;
+  let watchEditorKey;
+  let watchRun;
+
+  const printingKey = (id, printing) => JSON.stringify([String(id), printing]);
+  const watchMoney = cents => cents == null ? '—' :
+    (cents < 0 ? '−' : '') + E.money(Math.abs(cents) / 100, 2);
+
+  function watchedCards() {
+    return userRecords(collectionState(), 'watch');
+  }
+
+  function renderWatchEditor(card, reset = false) {
+    const editor = $('#watch-editor');
+    editor.hidden = catalogPrinting == null;
+    const key = editor.hidden ? null : printingKey(card.id, catalogPrinting);
+    if (!reset && key === watchEditorKey) return;
+    watchEditorKey = key;
+    if (editor.hidden) return;
+    const saved = watchedCards().find(row => row.key === key);
+    const form = $('#watch-form');
+    form.elements.buy.value = saved?.buy == null ? '' : saved.buy / 100;
+    form.elements.sell.value = saved?.sell == null ? '' : saved.sell / 100;
+    form.elements.shipping.value = (saved?.shipping ?? OQ_MARKET.defaultShipping) / 100;
+    $('#watch-editor-title').textContent = saved ? 'Edit Watchlist targets' : 'Set price targets';
+    $('#watch-printing').textContent = catalogPrinting || 'Default printing';
+    $('#watch-editor-status').textContent = '';
+    $('#watch-remove').hidden = !saved;
+  }
+
+  function refreshWatchlist() {
+    const rows = watchedCards();
+    const today = Math.floor(Date.now() / 86400000);
+    const signature = JSON.stringify([today, rows]);
+    if (watchRun?.signature === signature && watchRun.catalog === S.byKey) {
+      if (S.tab === 'watchlist') renderWatchlist();
+      return;
+    }
+
+    const entries = rows.map(row => ({
+      ...row, card: S.byKey[row.id],
+      status: OQ_MARKET.watchTargets(row, null, today)
+    }));
+    const run = { signature, catalog: S.byKey, entries };
+    watchRun = run;
+    const available = entries.filter(row => row.card &&
+      [row.card.printing, row.card.alt_printing?.printing].includes(row.printing));
+    run.loading = available.length > 0;
+    renderWatchlist();
+    if (!run.loading) return;
+
+    Promise.resolve(S.historyWrite).then(() => OQ_HISTORY.scan(available, (row, points) => ({
+      ...row, quote: points.at(-1), status: OQ_MARKET.watchTargets(row, points.at(-1), today)
+    }), () => {})).then(result => {
+      const quotes = new Map(result.rows.map(row => [row.key, row]));
+      run.entries = entries.map(row => quotes.get(row.key) || row);
+      run.partial = result.unavailable > 0 || result.storageUnavailable;
+    }).catch(() => { run.partial = true; }).finally(() => {
+      run.loading = false;
+      if (watchRun === run) renderWatchlist();
+    });
+  }
+
+  function renderWatchlist() {
+    const { entries, loading, partial } = watchRun;
+    const hit = row => row.status.buyHit || row.status.sellHit;
+    const hits = entries.filter(hit).length;
+    $('#watch-tab-count').textContent = hits ? ` (${hits})` : '';
+    if (S.tab !== 'watchlist') return;
+    $('#watch-status').textContent = entries.length
+      ? (loading ? 'Checking daily prices…' :
+        `${hits} of ${entries.length} watched printings at target.${partial ? ' Some price history could not load.' : ''}`) +
+        ' Targets are saved in this browser.'
+      : 'Open a card from Card Search and set a buy or sell target to start your Watchlist.';
+    const sales = compSales();
+    const today = todayLocal();
+    $('#watch-results').innerHTML = entries.slice().sort((a, b) => Number(hit(b)) - Number(hit(a)))
+      .map(row => {
+        const { card, quote, status } = row;
+    const { count, median } = OQ_MARKET.summarizeComps(
+          sales.filter(sale => sale.key === row.key && sale.condition === 'NM'), today);
+        const quoteLabel = quote
+          ? OQ_HISTORY.dateLabel(quote[0]) + (status.fresh ? '' : ' · Stale quote')
+          : loading ? 'Checking prices…' : 'Daily quote unavailable';
+        const targetLabel = reached => status.fresh ? (reached ? 'Target met' : 'Waiting') : 'Awaiting fresh quote';
+        return `<article class="scanner-card watch-card">
+          <h2>${esc(card?.card_name || row.name)}</h2>
+          <div class="small muted">${esc([row.number, card?.set_name || row.set, row.printing || 'Default printing'].filter(Boolean).join(' · '))}</div>
+          <p class="small muted">${esc(quoteLabel)}</p>
+          <p class="small">Market ${watchMoney(quote?.[1])} · Lowest listing ${watchMoney(quote?.[2])}</p>
+          ${row.buy != null ? `<p class="small">Buy at ${watchMoney(row.buy)} or less · <span ${status.buyHit ? 'data-hit' : ''}>${
+            status.fresh && !(quote?.[2] > 0) ? 'Listing unavailable' : targetLabel(status.buyHit)}</span></p>` : ''}
+          ${row.sell != null ? `<p class="small">Sell for ${watchMoney(row.sell)} net · <span ${status.sellHit ? 'data-hit' : ''}>${targetLabel(status.sellHit)}</span>
+            <br><span class="muted">Estimated net ${watchMoney(status.net)} · ${watchMoney(row.shipping)} shipping cost</span></p>` : ''}
+          <p class="small muted">eBay Near Mint · ${count ? watchMoney(median) + ' median · ' + count + ' logged' : 'No logged sales'} in 90 days</p>
+          <div>${card && [card.printing, card.alt_printing?.printing].includes(row.printing)
+            ? `<button class="btn small" type="button" data-watch-edit="${esc(row.key)}">View / edit targets</button>`
+            : `<button class="btn small" type="button" data-watch-remove="${esc(row.key)}">Remove unavailable printing</button>`}</div>
+        </article>`;
+      }).join('');
+  }
+
+  function removeWatchTarget(key) {
+    if (!saveUserRecords('watch', watchedCards().filter(row => row.key !== key))) return false;
+    refreshWatchlist();
+    return true;
+  }
+
+  function wireWatchlist() {
+    const status = $('#watch-editor-status');
+    on('#watch-form', 'submit', event => {
+      event.preventDefault();
+      const card = S.byKey[catalogCardKey];
+      if (!card || catalogPrinting == null) return;
+      const fields = event.currentTarget.elements;
+      const cents = field => field.value === '' ? null : Math.round(field.valueAsNumber * 100);
+      const buy = cents(fields.buy);
+      const sell = cents(fields.sell);
+      if (buy == null && sell == null) {
+        status.textContent = 'Enter a buy target, a sell target, or both.';
+        return;
+      }
+      const key = printingKey(card.id, catalogPrinting);
+      const row = { key, id: String(card.id), name: card.card_name, number: card.card_set_id,
+        set: card.set_name, printing: catalogPrinting, buy, sell,
+        shipping: cents(fields.shipping) ?? OQ_MARKET.defaultShipping };
+      if (!saveUserRecords('watch', [...watchedCards().filter(saved => saved.key !== key), row])) {
+        status.textContent = 'Could not save the targets. Free up browser storage and try again.';
+        return;
+      }
+      renderWatchEditor(card, true);
+      refreshWatchlist();
+      status.textContent = 'Targets saved.';
+    });
+    on('#watch-remove', 'click', () => {
+      if (!removeWatchTarget(watchEditorKey)) {
+        status.textContent = 'Could not remove the targets. Try again.';
+        return;
+      }
+      renderWatchEditor(S.byKey[catalogCardKey], true);
+      $('#watch-editor-title').focus();
+      status.textContent = 'Removed from Watchlist.';
+    });
+    on('#watch-search', 'click', () => {
+      switchTab('catalog');
+      $('#catalog-query').focus({ preventScroll: true });
+    });
+    on('#watch-results', 'click', event => {
+      const button = event.target.closest('[data-watch-edit], [data-watch-remove]');
+      if (!button) return;
+      if (button.dataset.watchRemove) {
+        if (!removeWatchTarget(button.dataset.watchRemove)) $('#watch-status').textContent = 'Could not remove the targets. Try again.';
+        else $('#watch-search').focus();
+        return;
+      }
+      const row = watchedCards().find(row => row.key === button.dataset.watchEdit);
+      if (!row) return;
+      openCatalogCard(row.id, row.printing);
+      showCardSection('watch');
+      $('#watch-editor-title').focus();
+    });
+  }
+
+  const compConditions = D.CONDITIONS.map(({ code, label }) => [code, label]);
+  const todayLocal = () => {
+    const now = new Date();
+    return new Date(now - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  };
+
+  function compSales() {
+    return userRecords(collectionState(), 'comps');
+  }
+
+  function compGroup(sale) {
+    return sale.condition === 'graded' ? sale.grader + ' ' + sale.grade : sale.condition;
+  }
+
+  function renderCompGroups(selected = $('#comps-group').value) {
+    const grades = [...new Set(compSales().filter(sale => sale.key === compsKey && sale.condition === 'graded')
+      .map(compGroup))].sort();
+    const select = $('#comps-group');
+    catalogOptions(select, [...compConditions, ...grades.map(grade => [grade, grade])]);
+    select.value = [...select.options].some(option => option.value === selected) ? selected : 'NM';
+  }
+
+  function renderCompSummary(card, sales = compSales()) {
+    const group = $('#comps-group').value;
+    const matching = sales.filter(sale => sale.key === compsKey && compGroup(sale) === group)
+      .sort((a, b) => b.sold.localeCompare(a.sold));
+    const { count, median, latest, age } = OQ_MARKET.summarizeComps(matching, todayLocal());
+    const alt = card.alt_printing?.printing === catalogPrinting ? card.alt_printing : null;
+    const market = alt ? alt.market : card.market_price;
+    const money = cents => E.money(cents / 100, 2);
+    $('#comps-summary').innerHTML = `
+      <div><dt>eBay median · last 90 days</dt><dd>${median == null ? '—' : money(median)}</dd>
+        <span class="small muted">${count} logged ${count === 1 ? 'sale' : 'sales'} · shipping included${latest ? ' · Latest ' + esc(latest) : ''}
+          ${count > 0 && count < 3 ? ' · Small sample' : ''}${age > 30 ? ' · No sale in the last 30 days' : ''}</span></div>
+      <div><dt>TCGplayer Market Price</dt><dd>${catalogPrice(market)}</dd>
+        <span class="small muted">Printing-level quote. This feed has no condition or grade breakdown.</span></div>`;
+    $('#comps-sales').innerHTML = matching.map(sale => `<li class="small">
+      <strong>${money(sale.price + sale.shipping)}</strong>
+      <span class="muted">${esc(sale.sold)} · ${money(sale.price)} + ${money(sale.shipping)} shipping</span>
+      ${/^\d{9,15}$/.test(sale.itemId || '') ? `<a href="https://www.ebay.com/itm/${sale.itemId}" target="_blank" rel="noopener noreferrer">Listing ↗</a>` : ''}
+      <button type="button" class="btn ghost small" data-comp-remove="${esc(sale.id)}">Remove</button>
+    </li>`).join('');
+    const nearMint = OQ_MARKET.summarizeComps(sales.filter(sale => sale.key === compsKey && sale.condition === 'NM'), todayLocal());
+    const evidence = $('#catalog-comp-evidence');
+    evidence.textContent = nearMint.count
+      ? `eBay Near Mint · ${nearMint.count} logged ${nearMint.count === 1 ? 'sale' : 'sales'} in 90 days · Latest ${nearMint.latest}` +
+        (nearMint.count < 3 ? ' · Small sample' : '') + (nearMint.age > 30 ? ' · No sale in the last 30 days' : '')
+      : 'eBay Near Mint · No logged sales in the last 90 days.';
+  }
+
+  function syncCompGrade() {
+    const fields = $('#comps-add').elements;
+    const graded = fields.condition.value === 'graded';
+    for (const field of [fields.grader, fields.grade]) {
+      field.closest('label').hidden = field.disabled = !graded;
+      field.required = graded;
+    }
+  }
+
+  function renderCatalogComps(card) {
+    const host = $('#catalog-comps');
+    host.hidden = catalogPrinting == null;
+    if (host.hidden) {
+      compsKey = null;
+      $('#catalog-comp-evidence').textContent = '';
+      return;
+    }
+    const key = printingKey(card.id, catalogPrinting);
+    if (key !== compsKey) {
+      compsKey = key;
+      const form = $('#comps-add');
+      form.reset();
+      form.elements.sold.max = form.elements.sold.value = todayLocal();
+      form.elements.condition.value = 'NM';
+      $('#comps-entry').open = false;
+      $('#comps-status').textContent = '';
+      syncCompGrade();
+      renderCompGroups('NM');
+    }
+    $('#comps-printing').textContent = [card.card_set_id, card.set_name, catalogPrinting || 'Default printing']
+      .filter(Boolean).join(' · ') + ' · Saved on this browser';
+    $('#comps-search').href = OQ_MARKET.ebaySoldSearch(card, catalogPrinting);
+    renderCompSummary(card);
+  }
+
+  function wireCatalogComps() {
+    const form = $('#comps-add');
+    const { sold, price, shipping, condition, grader, grade, listing } = form.elements;
+    catalogOptions(condition, [...compConditions, ['graded', 'Graded']]);
+    catalogOptions(grader, [['', 'Choose grader'], ...D.GRADERS.map(name => [name, name])]);
+    const status = $('#comps-status');
+    on('#comps-entry', 'toggle', () => { sold.max = todayLocal(); });
+    on('#comps-group', 'change', () => {
+      status.textContent = '';
+      renderCompSummary(S.byKey[catalogCardKey]);
+    });
+    condition.addEventListener('change', syncCompGrade);
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      const card = S.byKey[catalogCardKey];
+      if (!card || !compsKey || !form.reportValidity()) return;
+      if (sold.value > todayLocal()) {
+        status.textContent = 'Enter a sale date up to today.';
+        return;
+      }
+      const link = listing.value.trim();
+      const itemId = link ? OQ_MARKET.ebayItemId(link) : null;
+      if (link && !itemId) {
+        status.textContent = 'Enter an ebay.com item URL or leave the field blank.';
+        return;
+      }
+      const sales = compSales();
+      if (itemId && sales.some(sale => sale.key === compsKey && sale.itemId === itemId)) {
+        status.textContent = 'That listing is already saved for this printing.';
+        return;
+      }
+      const sale = {
+        id: C.uid(), key: compsKey, sold: sold.value, condition: condition.value,
+        price: Math.round(price.valueAsNumber * 100), shipping: Math.round(shipping.valueAsNumber * 100), itemId
+      };
+      if (sale.condition === 'graded') Object.assign(sale, { grader: grader.value, grade: grade.valueAsNumber });
+      if (!saveUserRecords('comps', [...sales, sale])) {
+        status.textContent = 'Could not save the sale. Free up browser storage and try again.';
+        return;
+      }
+      price.value = shipping.value = listing.value = '';
+      sold.value = todayLocal();
+      renderCompGroups(compGroup(sale));
+      renderCompSummary(card);
+      status.textContent = 'Sale saved.';
+    });
+    on('#comps-sales', 'click', event => {
+      const button = event.target.closest('[data-comp-remove]');
+      const card = S.byKey[catalogCardKey];
+      if (!button || !card || !compsKey) return;
+      const remaining = compSales().filter(sale => sale.key !== compsKey || sale.id !== button.dataset.compRemove);
+      if (!saveUserRecords('comps', remaining)) {
+        status.textContent = 'Could not remove the sale. Try again.';
+        return;
+      }
+      renderCompGroups();
+      renderCompSummary(card, remaining);
+      $('#comps-group').focus();
+      status.textContent = 'Sale removed.';
+    });
+  }
 
   function showPriceHistory(container, id, printings, onPrintingChange, initialPrinting) {
     const pending = S.historyWrite || Promise.resolve();
@@ -2823,13 +3285,13 @@
 
   function catalogDate() {
     const feed = S.catalogFeed;
-    const date = new Date(feed?.updated || S.fetchedAt);
-    if (!S.fetchedAt || !Number.isFinite(date.getTime())) return '';
-    const label = feed?.mock ? 'Local price snapshot' :
-      feed?.updated ? 'TCGplayer snapshot' : 'Prices fetched';
+    if (!feed) return '';
+    const date = new Date(feed.updated || NaN);
+    const label = feed.mock ? 'Local sample · TCGplayer' : 'TCGplayer via TCGCSV';
+    if (!Number.isFinite(date.getTime())) return label + ' · Snapshot date unavailable';
     return label + ' · ' + date.toLocaleDateString(undefined, {
-      month: 'short', day: 'numeric', year: 'numeric'
-    });
+      timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric'
+    }) + (Date.now() - date.getTime() > 36 * 3600000 ? ' · Update overdue' : '');
   }
 
   function catalogOptions(select, options) {
@@ -2849,7 +3311,8 @@
         return {
           card, badge, name, number,
           terms: searchWords([card.card_name, card.card_set_id, card.set_id,
-            card.set_name, setLabels.get(card.set_id), badge.label, card.card_type].join(' '))
+            card.set_name, setLabels.get(card.set_id), badge.label, card.card_type,
+            card.subtypes, card.attribute, card.rulesText].join(' '))
         };
       });
     }
@@ -2860,6 +3323,12 @@
     catalogOptions($('#catalog-type'), [['', 'All card types'], ...distinct(rows.map(row => row.card.card_type))]);
     catalogOptions($('#catalog-color'), [['', 'All colours'], ...distinct(['Red', 'Green', 'Blue', 'Purple', 'Black', 'Yellow'])]);
     $('#catalog-date').textContent = catalogDate();
+    $('#featured-cards').innerHTML = featuredPrintings.map(key => {
+      const card = S.byKey[key];
+      if (!card?.card_image) return '';
+      return `<button class="featured-card" type="button" data-key="${esc(key)}"
+        aria-label="View ${esc(card.card_name)}">${cardArt(card)}</button>`;
+    }).join('');
     renderCatalogResults();
     if ($('#catalog-dialog').open) renderCatalogCard();
   }
@@ -2905,13 +3374,13 @@
     const grid = $('#catalog-grid');
     const start = append ? grid.children.length : 0;
     const markup = matches.slice(start, catalogLimit).map(({ row }) => {
-      const { card, badge } = row;
+      const { card } = row;
       return `<button class="catalog-tile" type="button" data-key="${esc(E.cardKey(card))}">
-        ${cardArt(card, 'catalog-art')}
+        <span class="catalog-frame">${cardArt(card, 'catalog-art')}${rarityChip(card)}</span>
         <span class="catalog-tile-body">
+          <span class="catalog-tile-number">${esc(card.card_set_id || card.set_id)}</span>
           <strong>${esc(card.card_name)}</strong>
-        <span class="catalog-tile-meta">${esc(card.card_set_id || card.set_id)} · ${esc(badge.label)}</span>
-        <span class="catalog-tile-meta">${esc(card.set_name || setName(card.set_id))}</span>
+          <span class="catalog-tile-meta">${esc(card.set_name || setName(card.set_id))}</span>
           <span class="catalog-tile-price">${catalogPrice(card.market_price)}</span>
         </span>
       </button>`;
@@ -2919,7 +3388,7 @@
     if (append) {
       grid.insertAdjacentHTML('beforeend', markup);
       grid.children[start]?.focus();
-    } else grid.innerHTML = markup;
+    } else grid.innerHTML = markup || '<p class="catalog-empty">No matching cards. Try a different name, card number, or filter.</p>';
     $('#catalog-more').hidden = matches.length <= catalogLimit;
   }
 
@@ -2930,14 +3399,23 @@
       return;
     }
     const badge = E.rarityBadge(card);
+    const number = String(card.card_set_id || '').toUpperCase();
+    const reprints = /^([A-Z]+\d{2})-\d{3}$/.test(number)
+      ? [...new Set(S.cards.filter(other => ['PRB-01', 'PRB-02'].includes(other.set_id) &&
+          other.set_id !== card.set_id && other.card_set_id?.toUpperCase() === number).map(other => other.set_id))]
+      : [];
     const printings = card.printing == null ? null :
       [card.printing, ...(card.alt_printing ? [card.alt_printing.printing] : [])];
-    $('#catalog-card').innerHTML = `<div class="catalog-detail">
-      <div class="catalog-art">${cardArt(card)}</div>
-      <div>
+    if (!printings?.includes(catalogPrinting)) catalogPrinting = card.printing;
+    $('#catalog-finish-field').hidden = !printings || printings.length < 2;
+    catalogOptions($('#catalog-finish'), (printings || []).map(finish => [finish, finish || 'Default finish']));
+    $('#catalog-finish').value = catalogPrinting ?? '';
+    $('#catalog-preview').innerHTML = cardArt(card, 'catalog-art');
+    $('#catalog-card').innerHTML = `<div class="card-identity">
         <div class="small muted">${esc(card.card_set_id || card.set_id)} · ${esc(badge.label)}</div>
         <h2 id="catalog-card-title">${esc(card.card_name)}</h2>
         <p class="small muted">${esc(card.set_name || setName(card.set_id))}</p>
+        ${reprints.length ? `<p class="small muted">Same card number also in ${esc(reprints.join(', '))}. Compare the exact artwork and finish before using a price.</p>` : ''}
         <dl class="catalog-quotes">
           <div><dt>TCGplayer Market Price</dt><dd id="catalog-detail-market"></dd></div>
           <div><dt>Lowest listing</dt><dd id="catalog-detail-low"></dd></div>
@@ -2945,20 +3423,17 @@
         <p class="small muted">${esc(catalogDate())}</p>
         ${card.buy_url ? `<a href="${esc(card.buy_url)}" target="_blank" rel="noopener noreferrer">View on TCGplayer</a>` : ''}
         ${isPullable(catalogCardKey) ? '<button class="btn" id="catalog-rip" type="button">Rip vs Buy</button>' : ''}
-      </div>
     </div>`;
     renderCatalogQuotes(card);
-    const historyKey = JSON.stringify([catalogCardKey, printings, S.fetchedAt]);
+    renderGameplay(card);
+    renderCatalogComps(card);
+    renderWatchEditor(card);
+    const historyKey = JSON.stringify([catalogCardKey, catalogPrinting, S.fetchedAt]);
     if (catalogHistoryKey !== historyKey) {
       catalogHistoryKey = historyKey;
       $('#catalog-market').textContent = printings ? 'Loading market analysis…' : '';
       if (printings) {
-        showPriceHistory($('#catalog-history'), card.id, printings, series => {
-          catalogPrinting = series.printing;
-          renderCatalogQuotes(card);
-          renderCardMarket(series);
-          renderCatalogOwnership();
-        }, catalogPrinting);
+        showPriceHistory($('#catalog-history'), card.id, [catalogPrinting], renderCardMarket);
       } else $('#catalog-history').textContent = 'Refresh card data to identify the printing for this chart.';
     }
     catalogOptions($('#catalog-binder'), C.live(S.cols).map(col => [col.id, col.name]));
@@ -2981,33 +3456,67 @@
     $('#catalog-detail-low').textContent = catalogPrice(alt ? alt.low : card.inventory_price);
   }
 
+  function renderGameplay(card) {
+    const fields = [
+      ['Type', card.card_type], ['Color', card.card_color], ['Cost', card.cost], ['Life', card.life],
+      ['Power', card.power], ['Counter', card.counter], ['Attribute', card.attribute], ['Traits', card.subtypes]
+    ].filter(([, value]) => value);
+    const bandai = 'https://en.onepiece-cardgame.com';
+    $('#catalog-gameplay').innerHTML = `
+      ${fields.length ? `<dl class="market-evidence">${fields.map(([label, value]) =>
+        `<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>` : ''}
+      ${card.rulesText ? `<h3>Card text</h3><p class="card-effect">${esc(card.rulesText)}</p>
+        <p class="small muted">Text via TCGplayer. Check Bandai’s English reference for official wording and updates.</p>`
+        : '<p class="small muted">Card text is unavailable in the catalog feed.</p>'}
+      <h3>Bandai’s English reference</h3>
+      <ul class="gameplay-links">
+        <li><a href="${bandai}/cardlist/" target="_blank" rel="noopener noreferrer">Official card list</a></li>
+        <li><a href="${bandai}/rules/" target="_blank" rel="noopener noreferrer">Rules and card rulings</a></li>
+        <li><a href="${bandai}/rules/errata_card/" target="_blank" rel="noopener noreferrer">Card errata</a></li>
+        <li><a href="${bandai}/news/restriction.html" target="_blank" rel="noopener noreferrer">Banned and restricted cards</a></li>
+        <li><a href="${bandai}/products/" target="_blank" rel="noopener noreferrer">Product releases</a></li>
+        <li><a href="${bandai}/events/" target="_blank" rel="noopener noreferrer">Organized play events</a></li>
+      </ul>`;
+  }
+
   function openCatalogCard(key, printing) {
     if (!S.byKey[key]) return;
     catalogCardKey = key;
     catalogPrinting = printing;
+    watchEditorKey = null;
+    showCardSection('market');
     catalogHistoryKey = null;
     $('#catalog-quantity').value = '1';
     renderCatalogCard();
     $('#catalog-dialog').showModal();
   }
 
+  function showCardSection(section) {
+    $$('#card-sections button').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.cardSection === section));
+    });
+    $$('[data-card-pane]', $('#catalog-dialog')).forEach(pane => {
+      pane.hidden = pane.dataset.cardPane !== section;
+    });
+    $('#watch-editor').open = section === 'watch';
+  }
+
   function renderCardMarket({ printing, points }) {
     const host = $('#catalog-market');
-    const call = OQ_MARKET.analyze(points, Math.floor(Date.now() / 86400000));
+    const today = Math.floor(Date.now() / 86400000);
+    const call = OQ_MARKET.analyze(points, today);
     const money = cents => E.money(cents / 100, 2);
     const last = points.at(-1);
-    const date = last ? new Date(last[0] * 86400000).toLocaleDateString(undefined, {
-      month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC'
-    }) : '';
+    const date = last ? OQ_HISTORY.dateLabel(last[0]) : '';
     const range = values => values.map(money).join(' – ');
-    const pct = value => (value > 0 ? '+' : '') + E.pct(value);
+    const pct = value => (value > 0 ? '+' : '') + E.pct(value, 2);
     host.innerHTML = `
       <div class="history-toolbar">
         <h3>Market analysis${printing ? ' · ' + esc(printing) : ''}</h3>
-        <strong class="market-call" data-call="${esc(call.call)}">${esc(call.call)}</strong>
+        <strong class="market-call" data-call="${esc(call.call)}">${esc(signalLabels[call.call])}</strong>
       </div>
       <p class="small">${esc(call.reason)}</p>
-      ${date ? `<p class="small muted">Latest recorded quote · ${esc(date)}</p>` : ''}
+      ${date ? `<p class="small muted">TCGplayer price history · ${esc(date)}${last[0] < today - 3 ? ' · Stale quote' : ''}</p>` : ''}
       ${call.market ? `
         <dl class="market-evidence">
           <div><dt>Analyzed Market Price</dt><dd>${money(call.market)}</dd></div>
@@ -3019,8 +3528,8 @@
         </dl>
         <details class="small market-rules">
           <summary>What would change the call?</summary>
-          <p>Buy at a market price of ${money(call.buyPrice)} or less with momentum of +5% or higher and a listing 5% to 50% below market. At the latest market price, the maximum qualifying listing is ${money(call.buyListing)}.</p>
-          <p>Sell at a market price of ${money(call.sellPrice)} or more with momentum of −5% or lower and a listing between 10% below and 25% above market. At the latest market price, the minimum qualifying listing is ${money(call.sellListing)}.</p>
+          <p>Buy at a Market Price of ${money(call.buy.price)} or less with momentum of +5% or higher. The qualifying listing range is ${range([call.buy.minListing, call.buy.maxListing])} at the latest Market Price.</p>
+          <p>Sell at a Market Price of ${money(call.sell.price)} or more with momentum of −5% or lower. The qualifying listing range is ${range([call.sell.minListing, call.sell.maxListing])} at the latest Market Price.</p>
           <p class="muted">Calls require a market price of at least $10 and distinct buy and sell thresholds. The ranges show the 10th–90th percentiles of observed prices. Momentum compares two seven-day medians about a month apart. Buy calls flag potential collection purchases. Sale volume and time to sell are unavailable.</p>
         </details>` : ''}
       ${last ? `
@@ -3033,7 +3542,7 @@
           <p>Estimated net <strong data-net aria-live="polite"></strong></p>
           <p class="muted">One US Marketplace Level 1–4 sale with seller-paid shipping, before buyer tax. <a href="https://help.tcgplayer.com/hc/en-us/articles/201357836-TCGplayer-Fees" target="_blank" rel="noopener noreferrer">TCGplayer fee schedule</a></p>
         </details>` : ''}
-      <p class="small muted">Preliminary signals based on TCGplayer price snapshots. <a href="MARKET-BACKTEST.md" target="_blank" rel="noopener noreferrer">Backtest results</a></p>`;
+      <p class="small muted">Experimental flags use TCGplayer price snapshots. Sales volume, condition-specific quotes, and time to sell are unavailable in this feed. <a href="MARKET-BACKTEST.md" target="_blank" rel="noopener noreferrer">Backtest results</a></p>`;
     if (!last) return;
     const sale = host.querySelector('[data-sale]');
     const shipping = host.querySelector('[data-shipping]');
@@ -3051,20 +3560,187 @@
 
   function renderCatalogOwnership(message = '') {
     const card = S.byKey[catalogCardKey];
-    const alternate = catalogPrinting != null && catalogPrinting !== card?.printing;
-    $('#catalog-add button[type="submit"]').disabled = alternate;
-    if (alternate) {
-      $('#catalog-ownership').textContent = 'Select the catalog printing to add this card. Binders currently track one printing per product.';
-      return;
-    }
+    const printing = catalogPrinting ?? card?.printing;
+    const label = printing || 'Finish unavailable';
     const binder = $('#catalog-binder').value;
-    const count = C.live(S.items).filter(item => item.colId === binder && item.key === catalogCardKey)
+    $('#catalog-add button[type="submit"]').disabled = !binder || printing == null;
+    const count = C.live(S.items).filter(item => item.colId === binder && String(item.key) === catalogCardKey &&
+        holdingPrinting(item, card) === printing)
       .reduce((total, item) => total + Number(item.qty || 0), 0);
     $('#catalog-ownership').textContent = message || (count
-      ? `${count} in this binder` : 'Add raw near-mint copies. Edit condition, grade, or purchase details in My Collection.');
+      ? `${label} · ${count} in this binder`
+      : `${label} · Add raw near-mint copies. Edit condition, grade, or purchase details in My Collection.`);
+  }
+
+  function wireCardScan() {
+    const dialog = $('#scan-dialog');
+    const video = $('#scan-video');
+    const viewfinder = $('#scan-viewfinder');
+    const capture = $('#scan-capture');
+    const camera = $('#scan-camera');
+    const file = $('#scan-file');
+    const number = $('#scan-number');
+    const star = $('#scan-star');
+    const status = $('#scan-status');
+    const results = $('#scan-results');
+    let stream;
+    let job;
+    let cameraRequest;
+
+    function stopCamera() {
+      cameraRequest = null;
+      stream?.getTracks().forEach(track => track.stop());
+      stream = null;
+      video.srcObject = null;
+      viewfinder.hidden = capture.hidden = true;
+    }
+
+    function showMatches(numbers) {
+      const keys = new Set(numbers.map(OQ_SCAN.normalize).filter(Boolean));
+      const matches = S.cards.filter(card => keys.has(OQ_SCAN.normalize(card.card_set_id)))
+        .map(card => ({ card, badge: E.rarityBadge(card) }));
+      if (star.checked) matches.sort((a, b) => Number(b.badge.star) - Number(a.badge.star));
+      results.innerHTML = matches.map(({ card, badge }) => `
+        <button class="catalog-tile" type="button" data-key="${esc(E.cardKey(card))}">
+          ${cardArt(card, 'catalog-art')}
+          <span class="catalog-tile-body"><strong>${esc(card.card_name)}</strong>
+            <span class="small muted">${esc(card.card_set_id)} · ${esc(badge.label)}</span>
+            <span class="catalog-tile-meta">${esc(card.set_name)}</span></span>
+        </button>`).join('');
+      status.textContent = matches.length
+        ? `${matches.length} ${matches.length === 1 ? 'match' : 'matches'}. Confirm the artwork.`
+        : 'No catalog match. Check the number or try a clearer photo.';
+    }
+
+    let recognized = [];
+    async function scan(makeFrame) {
+      job?.abort();
+      const task = job = new AbortController();
+      let frame;
+      recognized = [];
+      results.replaceChildren();
+      number.value = '';
+      star.checked = false;
+      status.textContent = 'Preparing the scan…';
+      try {
+        frame = await makeFrame();
+        if (task.signal.aborted) return;
+        const result = await OQ_SCAN.recognize(frame, task.signal, stage => {
+          status.textContent = stage === 'recognizing text' ? 'Reading card number…' : 'Loading the scanner…';
+        });
+        if (task.signal.aborted) return;
+        recognized = result.numbers;
+        number.value = recognized[0] || '';
+        star.checked = result.starred;
+        if (recognized.length) showMatches(recognized);
+        else status.textContent = 'Could not read the card number. Retake the photo or enter the number below.';
+      } catch (_) {
+        if (!task.signal.aborted) status.textContent = 'Could not scan this photo. Try a JPEG or PNG, or enter the card number below.';
+      } finally {
+        if (frame) frame.width = frame.height = 0;
+        if (job === task) job = null;
+      }
+    }
+
+    on('#scan-open', 'click', () => {
+      recognized = [];
+      number.value = status.textContent = '';
+      star.checked = false;
+      results.replaceChildren();
+      dialog.showModal();
+    });
+    on('#scan-close', 'click', () => dialog.close());
+    dialog.addEventListener('close', () => {
+      job?.abort();
+      stopCamera();
+      file.value = '';
+    });
+    camera.addEventListener('click', async () => {
+      job?.abort();
+      stopCamera();
+      const request = cameraRequest = {};
+      status.textContent = 'Waiting for camera access…';
+      try {
+        const next = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false
+        });
+        if (!dialog.open || cameraRequest !== request) {
+          next.getTracks().forEach(track => track.stop());
+          return;
+        }
+        stream = next;
+        video.srcObject = stream;
+        viewfinder.hidden = capture.hidden = false;
+        status.textContent = 'Fit the whole card inside the outline.';
+      } catch (_) {
+        if (dialog.open && cameraRequest === request) {
+          status.textContent = 'Camera unavailable. Choose a photo or enter a card number.';
+        }
+      }
+    });
+    function crop() {
+      const { videoWidth: width, videoHeight: height } = video;
+      if (!width || !height) return null;
+      const frameWidth = Math.min(width * .80, height * .86 * 5 / 7);
+      const w = frameWidth / width, h = frameWidth * 7 / 5 / height;
+      return [(1 - w) / 2, (1 - h) / 2, w, h];
+    }
+    video.addEventListener('resize', () => {
+      const region = crop();
+      if (!region) return;
+      viewfinder.style.setProperty('--guide-width', region[2] * 100 + '%');
+      viewfinder.style.setProperty('--guide-height', region[3] * 100 + '%');
+    });
+    capture.addEventListener('click', () => {
+      const region = crop();
+      if (!region || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+      const frame = OQ_SCAN.picture(video, { width: video.videoWidth, height: video.videoHeight }, region);
+      stopCamera();
+      scan(() => frame);
+    });
+    file.addEventListener('change', () => {
+      const photo = file.files[0];
+      file.value = '';
+      if (!photo) return;
+      stopCamera();
+      scan(async () => {
+        const bitmap = await createImageBitmap(photo);
+        try {
+          return OQ_SCAN.picture(bitmap, bitmap, [0, 0, 1, 1], Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height)));
+        } finally { bitmap.close(); }
+      });
+    });
+    on('#scan-lookup', 'submit', event => {
+      event.preventDefault();
+      job?.abort();
+      stopCamera();
+      recognized = [number.value];
+      showMatches(recognized);
+    });
+    star.addEventListener('change', () => {
+      if (recognized.length) showMatches(recognized);
+    });
+    results.addEventListener('click', event => {
+      const match = event.target.closest('[data-key]');
+      if (!match) return;
+      dialog.close();
+      openCatalogCard(match.dataset.key);
+    });
   }
 
   function wireCatalog() {
+    wireCardScan();
+    wireCatalogComps();
+    wireWatchlist();
+    on('#card-sections', 'click', event => {
+      const button = event.target.closest('[data-card-section]');
+      if (button) showCardSection(button.dataset.cardSection);
+    });
+    const compact = matchMedia('(max-width: 1050px)');
+    const syncFilters = () => { $('.catalog-filters').open = !compact.matches; };
+    syncFilters();
+    compact.addEventListener('change', syncFilters);
     const reset = () => {
       catalogLimit = CATALOG_PAGE;
       renderCatalogResults();
@@ -3084,25 +3760,32 @@
       if (!tile) return;
       openCatalogCard(tile.dataset.key);
     });
+    on('#featured-cards', 'click', event => {
+      const tile = event.target.closest('button[data-key]');
+      if (tile) openCatalogCard(tile.dataset.key);
+    });
     on('#catalog-close', 'click', () => $('#catalog-dialog').close());
     on('#sealed-history-close', 'click', () => $('#sealed-history-dialog').close());
     on('#catalog-binder', 'change', () => renderCatalogOwnership());
+    on('#catalog-finish', 'change', event => {
+      catalogPrinting = event.currentTarget.value;
+      renderCatalogCard();
+    });
     on('#catalog-add', 'submit', event => {
       event.preventDefault();
       const binder = C.live(S.cols).find(col => col.id === $('#catalog-binder').value);
       const qty = $('#catalog-quantity').valueAsNumber;
       const card = S.byKey[catalogCardKey];
-      if (!binder || !card || (catalogPrinting != null && catalogPrinting !== card.printing) ||
+      const printing = catalogPrinting ?? card?.printing;
+      if (!binder || !card || printing == null || (printing !== card.printing && printing !== card.alt_printing?.printing) ||
           !Number.isInteger(qty) || qty < 1 || qty > 9999) return;
-      const next = [...S.items, C.newItem(binder.id, catalogCardKey, { qty, src: 'buy' })];
-      if (!saveCritical(KEY.items, next)) {
+      S.items.push(C.newItem(binder.id, catalogCardKey, { qty, printing, src: 'buy' }));
+      if (!persistCollection()) {
         renderCatalogOwnership('Could not save. Free up browser storage and try again.');
         return;
       }
-      S.items = next;
       S.curCol = binder.id;
-      schedulePush();
-      renderCatalogOwnership(`Added ${qty} to ${binder.name}.`);
+      renderCatalogOwnership(`Added ${qty}${printing ? ' ' + printing : ''} to ${binder.name}.`);
       if (S.tab === 'signals' && $('#sig-scope').value === 'owned') renderScannerResults();
     });
   }
@@ -3111,11 +3794,23 @@
 
   function switchTab(tab) {
     S.tab = tab;
-    $$('#tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
+    $('#nav-toggle').setAttribute('aria-expanded', 'false');
+    $$('#tabs button').forEach(button => {
+      const active = button.dataset.tab === tab;
+      button.setAttribute('aria-selected', String(active));
+      button.tabIndex = active ? 0 : -1;
+      if (active && button.offsetParent) {
+        const nav = $('#tabs');
+        const bounds = nav.getBoundingClientRect();
+        const item = button.getBoundingClientRect();
+        if (item.right > bounds.right) nav.scrollLeft += item.right - bounds.right;
+        if (item.left < bounds.left) nav.scrollLeft += item.left - bounds.left;
+      }
+    });
     $$('.view').forEach(v => v.classList.toggle('hidden', v.dataset.view !== tab));
     renderActive();
     wireCollapsibles();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: 'instant' });
 
   }
 
@@ -3127,6 +3822,7 @@
   function renderActive() {
     const fns = {
       catalog: renderCatalog,
+      watchlist: refreshWatchlist,
       rip: renderRip, collection: renderCollection,
       sets: renderSets, signals: renderSignals, settings: renderSettings
     };
@@ -3135,6 +3831,7 @@
     const banner = $('#render-error');
     try {
       fn();
+      if (S.tab !== 'watchlist') refreshWatchlist();
       if (banner) banner.classList.add('hidden');
     } catch (err) {
       /* NEVER overwrite the view's markup here.
@@ -3179,7 +3876,54 @@
   }
 
   function wire() {
-    $$('#tabs button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+    wireBackup();
+    const tabs = $$('#tabs button');
+    tabs.forEach(button => button.addEventListener('click', () => switchTab(button.dataset.tab)));
+    on('#nav-toggle', 'click', event => {
+      const button = event.currentTarget;
+      const expanding = button.getAttribute('aria-expanded') !== 'true';
+      button.setAttribute('aria-expanded', String(expanding));
+      if (expanding) $('#tabs [aria-selected="true"]')?.focus();
+    });
+    on('#tabs', 'click', () => {
+      if ($('#nav-toggle').offsetWidth) $('#nav-toggle').focus();
+    });
+    on('#collection-mode', 'click', event => {
+      const button = event.target.closest('[data-binder-mode]');
+      if (!button) return;
+      const editing = button.dataset.binderMode === 'table';
+      $$('#collection-mode button').forEach(option => {
+        option.setAttribute('aria-pressed', String(option === button));
+      });
+      $('#binder-gallery').hidden = editing;
+      $('#binder-table').hidden = !editing;
+    });
+    on('#binder-gallery', 'click', event => {
+      const button = event.target.closest('[data-key]');
+      if (button) openCatalogCard(button.dataset.key, button.dataset.printing);
+    });
+    on('#tabs', 'keydown', event => {
+      const toggle = $('#nav-toggle');
+      if (event.key === 'Escape' && toggle.offsetWidth) {
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.focus();
+        return;
+      }
+      const index = tabs.indexOf(event.target);
+      if (index < 0) return;
+      const next = { ArrowRight: (index + 1) % tabs.length, ArrowDown: (index + 1) % tabs.length,
+        ArrowLeft: (index + tabs.length - 1) % tabs.length, ArrowUp: (index + tabs.length - 1) % tabs.length,
+        Home: 0, End: tabs.length - 1 }[event.key];
+      if (!Number.isInteger(next)) return;
+      event.preventDefault();
+      switchTab(tabs[next].dataset.tab);
+      if (toggle.offsetWidth) toggle.setAttribute('aria-expanded', 'true');
+      tabs[next].focus();
+    });
+    on('#brand-home', 'click', () => {
+      switchTab('catalog');
+      $('#catalog-query').focus({ preventScroll: true });
+    });
     wireCatalog();
 
     on('#rip-set', 'change', e => {
@@ -3203,6 +3947,23 @@
       }, 180);
     });
     // ---- collection
+    on('#col-search-catalog', 'click', () => {
+      switchTab('catalog');
+      $('#catalog-query').focus({ preventScroll: true });
+    });
+    on('.collection-add', 'toggle', e => {
+      if (e.currentTarget.open) renderAddGrid();
+    });
+    on('#col-query', 'input', () => renderColTable(currentCol()));
+    on('#col-sort', 'change', () => renderColTable(currentCol()));
+    on('#col-sell', 'click', e => {
+      e.currentTarget.setAttribute('aria-pressed', String(e.currentTarget.getAttribute('aria-pressed') !== 'true'));
+      renderColTable(currentCol());
+    });
+    on('#col-tbl', 'click', e => {
+      const button = e.target.closest('button[data-key]');
+      if (button) openCatalogCard(button.dataset.key, button.dataset.printing);
+    });
     on('#col-new', 'click', () => {
       const name = prompt('Name this binder', 'New binder');
       if (!name) return;
@@ -3221,8 +3982,8 @@
         alert('Enter what you paid for those boxes.'); return;
       }
       S.opens.push(C.newOpen(setId, boxes, cost));
-      $('#op-cost').value = '';
-      persistCollection(); renderCollection();
+      if (persistCollection()) $('#op-cost').value = '';
+      renderCollection();
     });
     on('#add-set', 'change', e => { S.addSet = e.target.value; renderAddGrid(); });
     on('#add-min', 'change', renderAddGrid);
@@ -3259,19 +4020,11 @@
       const url = $('#data-url').value.trim().replace(/\/+$/, '');
       const msg = $('#data-msg');
 
-      // Clearing the field is a legitimate action — it drops back to the local
-      // snapshot, which is how development works.
-      if (!url) {
-        localStorage.removeItem(DATA_URL_KEY);
-        msg.innerHTML = '<span class="muted">Cleared. Using the local snapshot.</span>';
-        renderDataSource();
-        return;
-      }
-      // Refuse to save something that does not work. Saving a bad URL and
-      // reloading would empty the app and look like data loss.
-      if (!(await testDataSource(url))) return;
+      const candidate = url || SRC.defaultBase;
+      if (candidate !== './mockapi' && !(await testDataSource(candidate))) return;
 
-      localStorage.setItem(DATA_URL_KEY, url);
+      if (url) localStorage.setItem(DATA_URL_KEY, url);
+      else localStorage.removeItem(DATA_URL_KEY);
       msg.textContent = 'Saved. Reloading card data…';
       try {
         // The cached rows came from the old source; force a full refetch.
@@ -3315,19 +4068,6 @@
     on('#retry', 'click', boot);
   }
 
-  /* A pending write must not die with the tab. sendBeacon survives unload where
-     fetch does not. */
-  function flushOnExit() {
-    window.addEventListener('pagehide', () => {
-      if (!S.syncUrl || !S.pushTimer) return;
-      try {
-        navigator.sendBeacon(S.syncUrl, new Blob(
-          [JSON.stringify({ action: 'push', collections: S.cols, items: S.items })],
-          { type: 'text/plain;charset=utf-8' }));
-      } catch (_) {}
-    });
-  }
-
   /* ================================================================ BOOT == */
 
   /* Repoint v1 collection rows onto productIds, once, on the first v2 boot.
@@ -3338,11 +4078,7 @@
      match is worse than an unmigrated row, because the row still looks fine
      while pointing at the wrong card.
 
-     migrateKeys() stamps updatedAt on every row it repoints, which is exactly
-     what the sync treats as dirty, so the corrected keys ride up to the sheet
-     on the next push. Without that this device would be migrated while every
-     other one kept pulling the old keys back down. Row `id` is unchanged, so
-     the sheet updates rows in place rather than duplicating them. */
+     The original row ID keeps the holding and its other details intact. */
   function runKeyMigration() {
     const v1 = S.items.filter(it => C.isV1Key(it.key));
     if (!v1.length) return;
@@ -3357,7 +4093,10 @@
       examples: res.unmatched.slice(0, 8).map(it => it.key)
     };
 
-    if (res.migrated) persistCollection();
+    if (res.migrated && !persistCollection()) {
+      S.migrationReport = null;
+      return;
+    }
     save('optcg.migrationReport', S.migrationReport);
     console.info('[optcg] collection key migration:', S.migrationReport);
   }
@@ -3384,6 +4123,7 @@
     requestIdleCallback(step, { timeout: 2000 });
   }
 
+  let wired = false;
   async function boot() {
     const sharedUpdate = $('#shared-history-update');
     OQ_HISTORY.sharedStatus().then(stamp => {
@@ -3413,10 +4153,20 @@
        wait on the network. Wire the UI, then load. If loading fails you get a
        usable app with an explanation, and you can go and fix the cause. */
     try {
-      ensureCollections();
-      wire();
-      flushOnExit();
-      setSync(S.syncUrl ? 'ok' : 'off', S.syncUrl ? 'connected' : 'Sheets off');
+      if (!wired) {
+        wire();
+        window.addEventListener('storage', event => {
+          if (event.key !== KEY.collection) return;
+          applyCollection(collectionState());
+          backup.change();
+          if (['collection', 'signals', 'watchlist'].includes(S.tab)) renderActive();
+          if ($('#catalog-dialog').open) renderCatalogOwnership();
+        });
+        wired = true;
+        document.addEventListener('visibilitychange', () => backup.refresh());
+      }
+      if (ensureCollections() || !committedCollection.backupId) persistCollection();
+      backup.refresh();
     } catch (err) {
       // If even this fails the app is unusable, so say so plainly.
       $('#boot').classList.add('hidden');
@@ -3431,17 +4181,12 @@
         // Cache is warm — show it instantly, then quietly freshen in the background.
         refreshCachedCards().then(() => { invalidate(); renderActive(); }).catch(() => {});
       }
-      collapsePermanent('boot');
+      if (collapsePermanent('boot')) persistCollection();
       runKeyMigration();
-      compactTombstones();
 
       $('#boot').classList.add('hidden');
       $('#app').classList.remove('hidden');
       switchTab('catalog');
-
-      // Sheets is the source of truth across devices, so reconcile on every
-      // load. Render first so a slow sheet never blocks the app.
-      if (S.syncUrl) pullNow(true);
 
       prewarmIndexes();
     } catch (err) {
@@ -3454,9 +4199,7 @@
 
       const noSource = SRC.isMock();
       $('#boot-error-msg').innerHTML = noSource
-        ? 'No data source is configured.<br><span class="small muted">This app reads ' +
-          'TCGplayer prices through a small Cloudflare Worker. Deploy <code>worker/worker.js</code>, ' +
-          'then open Settings → Data source and paste its URL. See DEPLOY.md.</span>'
+        ? 'The local sample could not load. Start the local server or enter a Worker URL in Settings.'
         : esc(err.message) + '<br><span class="small muted">Data source: ' +
           esc(SRC.base()) + '</span>';
     }
