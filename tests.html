@@ -61,6 +61,7 @@
 <script src="collection.js?v=1.18.1"></script>
 <script src="backup.js"></script>
 <script src="card-scan.js"></script>
+<script src="market-analysis.js"></script>
 <script>
 (function (D, E, C) {
   'use strict';
@@ -832,6 +833,22 @@
     const deck = C.newItem('c1', 'ST-01|ST01-001|Luffy', { qty: 1, value: 5, src: 'pull' });
     const sb = C.scoreboard([], [deck], () => null, s => s, isBooster, setIdOf);
     eq(sb.rows.length, 0);
+  });
+
+  describe('market verdict evidence');
+  it('uses a recent two-week trend for a limited Hold without lowering buy and sell requirements', () => {
+    const points = Array.from({ length: 18 }, (_, day) => [day, day < 8 ? 1000 : 1300, 1200]);
+    const verdict = OQ_MARKET.analyze(points, 17);
+    eq([verdict.call, verdict.evidence, verdict.horizon], ['Hold', 'limited', 14]);
+    near(verdict.momentum, .3, .001);
+    ok(!verdict.buy && !verdict.sell);
+    eq(OQ_MARKET.analyze(points.slice(-8), 17).call, 'Insufficient data');
+    eq(OQ_MARKET.analyze(points, 21).call, 'Insufficient data');
+  });
+  it('shows a 30-day Hold when prices are plentiful but a current listing is missing', () => {
+    const points = Array.from({ length: 201 }, (_, day) => [day, 3100, day === 200 ? null : 3030]);
+    const verdict = OQ_MARKET.analyze(points, 200);
+    eq([verdict.call, verdict.evidence, verdict.horizon, verdict.low], ['Hold', 'limited', 30, null]);
   });
 
   describe('card number OCR');

@@ -14,6 +14,7 @@ const excluded = { noForwardQuote: {30: 0, 90: 0}, noCardMatch: 0 };
 async function run() {
   const vm = require('node:vm');
   const context = vm.createContext({
+    location: new URL('http://localhost/'),
     localStorage: { getItem: () => null },
     fetch: async url => new Response(fs.readFileSync(path.join(__dirname, url)))
   });
@@ -42,8 +43,8 @@ async function run() {
       for (let i = 180; i < points.length; i++) {
         const [day, market, low] = points[i];
         if (day % 7 !== 4) continue; // Mondays
-        const { call } = analyze(points.slice(0, i + 1), day);
-        if (call === 'Insufficient data') continue;
+        const { call, evidence } = analyze(points.slice(0, i + 1), day);
+        if (evidence !== 'full') continue;
         for (const horizon of horizons) {
           const later = byDay.get(day + horizon);
           if (!later) {

@@ -4,6 +4,7 @@ const OQ_MARKET = (() => {
 
   const defaultShipping = 500;
   const buyMinimum = 1000;
+  const summaryVersion = 2;
 
   function percentile(values, fraction) {
     const sorted = values.slice().sort((a, b) => a - b);
@@ -66,12 +67,14 @@ const OQ_MARKET = (() => {
       return insufficient('Wait for a Market Price from the last four UTC dates.');
     }
     const [day, market, low] = last;
-    if (!(low > 0)) return insufficient('The latest snapshot has no lowest listing for this printing.');
 
     const history = [];
     const quarter = [];
     const recent = [];
     const prior = [];
+    const twoWeeksAgo = [];
+    let last21 = 1;
+    let last40 = 1;
     for (let i = points.length - 2; i >= 0; i--) {
       const [pastDay, price] = points[i];
       const age = day - pastDay;
@@ -80,10 +83,26 @@ const OQ_MARKET = (() => {
       if (age <= 90) quarter.push(price);
       if (age <= 6) recent.push(price);
       if (age >= 27 && age <= 33) prior.push(price);
+      if (age >= 11 && age <= 17) twoWeeksAgo.push(price);
+      if (age <= 21) last21++;
+      if (age <= 40) last40++;
     }
     recent.push(market);
-    if (history.length < 180 || quarter.length < 60 || recent.length < 4 || prior.length < 4) {
-      return insufficient('Requires 180 observations in the past year, 60 in the past 90 days, and four near each end of the 30-day comparison.');
+    const enoughFor30 = recent.length >= 4 && prior.length >= 4;
+    const full = history.length >= 180 && quarter.length >= 60 && enoughFor30;
+    if (!full || !(low > 0)) {
+      const horizon = enoughFor30 && (last40 >= 18 || full) ? 30 :
+        last21 >= 10 && recent.length >= 4 && twoWeeksAgo.length >= 4 ? 14 : null;
+      if (!horizon) {
+        return insufficient('Too few recent prices for a trend. A short-term verdict needs at least 10 quotes and enough observations near both ends of a two-week comparison.');
+      }
+      const first = percentile(horizon === 30 ? prior : twoWeeksAgo, .5);
+      const momentum = percentile(recent, .5) / first - 1;
+      let reason = 'Recent prices are steady. Keep the card or wait for a better entry while the price history builds.';
+      if (!(low > 0)) reason = 'A recent market trend is visible, but there is no current lowest listing. Check available copies and their condition before trading.';
+      else if (momentum >= .05) reason = 'Recent prices are rising. If you already own it, keep it for now. If you’re buying, wait for a pullback or more price history.';
+      else if (momentum <= -.05) reason = 'Recent prices are falling. Wait for prices to stabilize before buying. Review recent sold listings if you’re considering an exit.';
+      return { call: 'Hold', reason, day, market, low, momentum, horizon, evidence: 'limited' };
     }
 
     const recentMedian = percentile(recent, .5);
@@ -106,19 +125,31 @@ const OQ_MARKET = (() => {
     }
     const eligible = market >= buyMinimum && buyPrice < sellPrice;
     let call = 'Hold';
-    let reason = 'The trend, historical price bands, and listing price do not align for a buy or sell.';
+    let reason = 'Keep the card or wait for a better entry. The price and trend do not support making a trade today.';
     if (market < buyMinimum) {
-      reason = 'The market price is below $10. Small price moves can be outweighed by fees and shipping.';
+      reason = 'Keep it or bundle it with other cards if you’re selling. On a card below $10, fees and shipping can outweigh typical price moves.';
     } else if (!eligible) {
-      reason = 'Wait for price history to separate the buy and sell thresholds.';
+      reason = 'Prices have stayed too close together to justify a trade. Wait for a meaningful move.';
     } else if (buy.priceMet && buy.trendMet && buy.listingMet) {
       call = 'Buy Now';
       reason = 'Market Price is low in both historical ranges, momentum has turned up, and the lowest listing is 5% to 50% below market.';
     } else if (sell.priceMet && sell.trendMet && sell.listingMet) {
       call = 'Sell Now';
       reason = 'Market Price is high in both historical ranges, momentum has turned down, and the lowest listing is close enough to market to support the price comparison.';
+    } else if (buy.priceMet && buy.trendMet) {
+      reason = 'Watch for a buy. The price and rebound qualify, but the lowest listing is outside the range. Check the exact printing and condition.';
+    } else if (sell.priceMet && sell.trendMet) {
+      reason = 'Review your exit price. The trend supports a sale review, but current listings don’t corroborate Market Price. Check recent sales first.';
+    } else if (buy.priceMet) {
+      reason = 'Wait for an entry. The card is cheap relative to its history. Look for a sustained rebound and a qualifying listing before buying.';
+    } else if (sell.priceMet) {
+      reason = 'Hold at the upper end of the range. If you’re considering selling, watch for a downturn and check current listings.';
+    } else if (momentum >= .05) {
+      reason = 'Keep it for now. Recent prices are rising, so let the price come down before buying.';
+    } else if (momentum <= -.05) {
+      reason = 'Wait for prices to stabilize before buying. If you own it, compare recent sold listings before lowering your asking price.';
     }
-    return { call, reason, day, market, low, momentum, year, recentRange, eligible, buy, sell };
+    return { call, reason, day, market, low, momentum, horizon: 30, evidence: 'full', year, recentRange, eligible, buy, sell };
   }
 
   function marketWindow(points, day) {
@@ -189,7 +220,7 @@ const OQ_MARKET = (() => {
     return analyzeSealedQuote(sealedQuote(points), today, singlesMoves, singlesCount);
   }
 
-  return { analyze, analyzeSealed, analyzeSealedQuote, sealedQuote, marketWindow, saleProceeds, defaultShipping,
+  return { analyze, analyzeSealed, analyzeSealedQuote, sealedQuote, marketWindow, saleProceeds, defaultShipping, summaryVersion,
     ebaySoldSearch, ebayItemId, summarizeComps, watchTargets };
 })();
 

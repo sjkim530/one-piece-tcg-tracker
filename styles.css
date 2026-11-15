@@ -1196,11 +1196,26 @@ button.btn:hover { color: var(--ink); }
 .card-identity p { margin: 5px 0 8px; }
 .card-identity a { margin-right: 8px; }
 .catalog-quotes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.catalog-quotes > div { border-radius: var(--r-s); background: #edf3fe; padding: 9px 11px; }
-.catalog-quotes dd { color: var(--ink); }
+.catalog-quotes > div {
+  display: grid; grid-template-rows: 1fr auto; gap: 4px; min-width: 0;
+  border-radius: var(--r-s); background: #edf3fe; padding: 9px 11px;
+}
+.catalog-quotes dt { line-height: 1.25; }
+.catalog-quotes dd { color: var(--ink); line-height: 1.2; font-variant-numeric: tabular-nums; }
+.catalog-quote-source { margin: 6px 0; }
+.catalog-quote-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
+.catalog-quote-actions a { display: inline-flex; align-items: center; min-height: 38px; }
 .segmented { display: flex; gap: 3px; flex-wrap: wrap; background: var(--bg-2); border: 1px solid var(--line-soft); padding: 4px; border-radius: 10px; }
 .segmented button { min-height: 39px; border: 0; border-radius: 6px; padding: 7px 11px; background: transparent; color: var(--ink-2); font: 650 13px var(--sans); cursor: pointer; }
 .segmented button:hover, .segmented button[aria-pressed="true"] { background: #dce7fc; color: #173577; }
+#card-sections {
+  display: grid;
+  grid-template-columns: minmax(0, .95fr) minmax(0, 1.22fr) minmax(0, 1fr) minmax(0, .83fr);
+}
+#card-sections button { min-width: 0; padding-inline: 3px; white-space: nowrap; }
+#catalog-market .market-call[data-call="Hold"], #sig-results .market-call[data-call="Hold"] {
+  color: #173577; background: #edf3fe;
+}
 .card-workspace .history-chart:not([hidden]) { height: 160px; }
 
 .collection-overview { display: grid; grid-template-columns: minmax(0, .95fr) minmax(0, 1.45fr); gap: 14px; margin-bottom: 22px; }
@@ -1358,8 +1373,9 @@ select:hover:enabled { border-color: var(--sea); }
   #catalog-dialog .card-workspace { grid-template-columns: minmax(76px, 25%) minmax(0, 1fr); align-items: start; }
   .card-workspace-content { display: contents; }
   .card-workspace-content > :not(#catalog-card) { grid-column: 1 / -1; }
-  .catalog-quotes > div { padding: 6px; min-width: 0; }
-  .catalog-quotes dd { font-size: 16px; overflow-wrap: anywhere; }
+  .catalog-quotes { margin-top: 0; }
+  .catalog-quotes dd { font-size: clamp(16px, 5vw, 20px); overflow-wrap: anywhere; }
+  .catalog-quote-actions a { min-height: 44px; }
   .segmented button { min-height: 44px; }
   select, input[type="search"], input[type="url"] { min-height: 44px; }
   .sets-sort-mobile { display: block; margin: 12px 0 0; }

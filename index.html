@@ -41,7 +41,7 @@
 <link rel="apple-touch-icon" href="icons/vault-192.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/vault-192.png">
 
-<link rel="stylesheet" href="styles.css?v=3.6.0">
+<link rel="stylesheet" href="styles.css?v=3.7.0">
 </head>
 <body>
 
@@ -177,6 +177,7 @@
       <div id="catalog-preview"></div>
       <div class="card-workspace-content">
       <div id="catalog-card"></div>
+      <section id="catalog-prices" aria-label="Current TCGplayer prices"></section>
       <form id="catalog-add">
         <label class="fld"><span>Binder</span><select id="catalog-binder" required></select></label>
         <label class="fld"><span>Quantity</span><input id="catalog-quantity" type="number" value="1" min="1" max="9999" step="1" required></label>
@@ -185,14 +186,14 @@
       </form>
       <p class="small muted" id="catalog-ownership" role="status"></p>
       <div class="segmented" id="card-sections" role="group" aria-label="Card details">
-        <button type="button" data-card-section="market" aria-pressed="true">Price & analysis</button>
+        <button type="button" data-card-section="market" aria-label="Prices and market analysis" aria-pressed="true">Prices</button>
         <button type="button" data-card-section="gameplay" aria-pressed="false">Gameplay</button>
-        <button type="button" data-card-section="watch" aria-pressed="false">Price targets</button>
-        <button type="button" data-card-section="comps" aria-pressed="false">eBay comps</button>
+        <button type="button" data-card-section="watch" aria-label="Price targets" aria-pressed="false">Targets</button>
+        <button type="button" data-card-section="comps" aria-label="eBay sold comparisons" aria-pressed="false">eBay</button>
       </div>
       <div data-card-pane="market">
-      <section class="price-history" id="catalog-history" aria-label="Card price history"></section>
       <section class="price-history" id="catalog-market" aria-label="Card market analysis"></section>
+      <section class="price-history" id="catalog-history" aria-label="Card price history"></section>
       <p id="catalog-comp-evidence" class="small muted"></p>
       </div>
       <section id="catalog-gameplay" data-card-pane="gameplay" aria-label="Gameplay" hidden></section>
@@ -473,7 +474,7 @@
         </select></label>
         <label class="fld"><span>Call</span><select id="sig-call">
           <option value="">All signals</option><option value="Buy Now">Buy candidate</option><option value="Sell Now">Review for sale</option>
-          <option value="Hold">No clear signal</option><option>Insufficient data</option>
+          <option value="Hold">Hold</option><option value="Insufficient data">No clear signal</option>
         </select></label>
         <label class="fld"><span>Search</span><input type="search" id="sig-search" placeholder="Name or card number"></label>
         <label class="fld"><span>Set</span><select id="sig-set"><option value="">All sets</option></select></label>
@@ -644,9 +645,9 @@ if ('serviceWorker' in navigator) {
 <script src="collection.js?v=3.4.0"></script>
 <script src="source.js?v=3.5.1"></script>
 <script src="price-history.js?v=3.0.0"></script>
-<script src="market-analysis.js?v=3.3.0"></script>
+<script src="market-analysis.js?v=3.7.0"></script>
 <script src="card-scan.js?v=3.6.1"></script>
 <script src="backup.js?v=3.5.0"></script>
-<script src="app.js?v=3.6.1"></script>
+<script src="app.js?v=3.7.0"></script>
 </body>
 </html>

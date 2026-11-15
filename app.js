@@ -1348,7 +1348,7 @@
       request.result = fetch('./market-summary.json', { cache: 'no-cache' }).then(async response => {
         if (!response.ok) throw new Error('Market summary unavailable');
         const summary = await response.json();
-        if (summary.version !== 1 || !Number.isSafeInteger(summary.day) || !summary.rows ||
+        if (summary.version !== OQ_MARKET.summaryVersion || !Number.isSafeInteger(summary.day) || !summary.rows ||
             Math.floor(Date.parse(summary.sourceUpdatedAt) / 86400000) !== summary.day) {
           throw new Error('Invalid market summary');
         }
@@ -1648,8 +1648,8 @@
   const signalLabels = {
     'Buy Now': 'Buy candidate',
     'Sell Now': 'Review for sale',
-    Hold: 'No clear signal',
-    'Insufficient data': 'Insufficient data'
+    Hold: 'Hold',
+    'Insufficient data': 'No clear signal'
   };
   const scannerOrder = ['Sell Now', 'Buy Now', 'Hold', 'Insufficient data'];
   let scannerLimit = scannerPage;
@@ -1744,21 +1744,22 @@
   }
 
   function scannerExplanation(analysis) {
-    if (!analysis.eligible) return `<span class="small muted">${esc(analysis.reason)}</span>`;
+    const note = `<span class="small muted">${analysis.evidence === 'limited' ? '<strong>Limited evidence.</strong> ' : ''}${esc(analysis.reason)}</span>`;
+    if (!analysis.eligible || analysis.call !== 'Hold') return note;
     const money = cents => E.money(cents / 100, 2);
     const listRange = rule => `${money(rule.minListing)}–${money(rule.maxListing)} at this Market Price`;
     const directions = [
       { name: signalLabels['Buy Now'], rule: analysis.buy, limit: 'or less', trend: '+5% or higher' },
       { name: signalLabels['Sell Now'], rule: analysis.sell, limit: 'or more', trend: '−5% or lower' }
     ];
-    return directions.map(({ name, rule, limit, trend }) => {
-      const needs = [];
-      if (!rule.priceMet) needs.push(`Market Price of ${money(rule.price)} ${limit}`);
-      if (!rule.trendMet) needs.push(`30-day trend of ${trend}`);
-      if (!rule.listingMet) needs.push(`listing within ${listRange(rule)}`);
-      return `<span class="small scanner-condition"><strong>${name}</strong>
-        ${needs.length ? 'needs ' + esc(needs.join(' · ')) : 'meets the price, trend, and listing rules.'}</span>`;
-    }).join('');
+    const nearest = directions.find(({ rule }) => [rule.priceMet, rule.trendMet, rule.listingMet].filter(Boolean).length === 2);
+    if (!nearest) return note;
+    const { name, rule, limit, trend } = nearest;
+    const needs = [];
+    if (!rule.priceMet) needs.push(`Market Price of ${money(rule.price)} ${limit}`);
+    if (!rule.trendMet) needs.push(`30-day trend of ${trend}`);
+    if (!rule.listingMet) needs.push(`listing within ${listRange(rule)}`);
+    return note + `<span class="small scanner-condition"><strong>${name}</strong> needs ${esc(needs.join(' · '))}</span>`;
   }
 
   function renderScannerResults() {
@@ -1825,7 +1826,7 @@
           <span class="small muted">${latest ? esc(OQ_HISTORY.dateLabel(latest[0])) +
             (latest[0] < run.today - 3 ? ' · Stale quote' : '') : 'No recorded quote'}</span>
           ${latest?.[2] > 0 ? `<span class="small">Low listing ${E.money(latest[2] / 100, 2)}</span>` : ''}
-          ${analysis.momentum != null ? `<span class="small">30-day trend ${analysis.momentum > 0 ? '+' : ''}${E.pct(analysis.momentum, 2)}</span>` : ''}
+          ${analysis.horizon ? `<span class="small">${analysis.horizon}-day trend ${analysis.momentum > 0 ? '+' : ''}${E.pct(analysis.momentum, 2)}</span>` : ''}
         </span>
         <span class="signal-rules">${scannerExplanation(analysis)}</span>
       </button>`;
@@ -3417,14 +3418,16 @@
         <h2 id="catalog-card-title">${esc(card.card_name)}</h2>
         <p class="small muted">${esc(card.set_name || setName(card.set_id))}</p>
         ${reprints.length ? `<p class="small muted">Same card number also in ${esc(reprints.join(', '))}. Compare the exact artwork and finish before using a price.</p>` : ''}
-        <dl class="catalog-quotes">
-          <div><dt>TCGplayer Market Price</dt><dd id="catalog-detail-market"></dd></div>
+    </div>`;
+    $('#catalog-prices').innerHTML = `<dl class="catalog-quotes">
+          <div><dt>Market price</dt><dd id="catalog-detail-market"></dd></div>
           <div><dt>Lowest listing</dt><dd id="catalog-detail-low"></dd></div>
         </dl>
-        <p class="small muted">${esc(catalogDate())}</p>
+        <p class="small muted catalog-quote-source">${esc(catalogDate())}</p>
+        <div class="catalog-quote-actions">
         ${card.buy_url ? `<a href="${esc(card.buy_url)}" target="_blank" rel="noopener noreferrer">View on TCGplayer</a>` : ''}
         ${isPullable(catalogCardKey) ? '<button class="btn" id="catalog-rip" type="button">Rip vs Buy</button>' : ''}
-    </div>`;
+        </div>`;
     renderCatalogQuotes(card);
     renderGameplay(card);
     renderCatalogComps(card);
@@ -3517,16 +3520,19 @@
         <strong class="market-call" data-call="${esc(call.call)}">${esc(signalLabels[call.call])}</strong>
       </div>
       <p class="small">${esc(call.reason)}</p>
+      ${call.evidence === 'limited' ? '<p class="small muted">Limited evidence · Recent price history supports a Hold review.</p>' : ''}
       ${date ? `<p class="small muted">TCGplayer price history · ${esc(date)}${last[0] < today - 3 ? ' · Stale quote' : ''}</p>` : ''}
       ${call.market ? `
         <dl class="market-evidence">
           <div><dt>Analyzed Market Price</dt><dd>${money(call.market)}</dd></div>
-          <div><dt>Analyzed lowest listing</dt><dd>${money(call.low)}</dd></div>
-          <div><dt>30-day momentum</dt><dd>${pct(call.momentum)}</dd></div>
-          <div><dt>Lowest listing vs. market</dt><dd>${pct(call.low / call.market - 1)}</dd></div>
+          <div><dt>Analyzed lowest listing</dt><dd>${call.low > 0 ? money(call.low) : 'Unavailable'}</dd></div>
+          <div><dt>${call.horizon}-day momentum</dt><dd>${pct(call.momentum)}</dd></div>
+          ${call.low > 0 ? `<div><dt>Lowest listing vs. market</dt><dd>${pct(call.low / call.market - 1)}</dd></div>` : ''}
+          ${call.evidence === 'full' ? `
           <div><dt>Typical 90-day range</dt><dd>${range(call.recentRange)}</dd></div>
-          <div><dt>Typical one-year range</dt><dd>${range(call.year)}</dd></div>
-        </dl>
+          <div><dt>Typical one-year range</dt><dd>${range(call.year)}</dd></div>` : ''}
+        </dl>` : ''}
+      ${call.eligible ? `
         <details class="small market-rules">
           <summary>What would change the call?</summary>
           <p>Buy at a Market Price of ${money(call.buy.price)} or less with momentum of +5% or higher. The qualifying listing range is ${range([call.buy.minListing, call.buy.maxListing])} at the latest Market Price.</p>

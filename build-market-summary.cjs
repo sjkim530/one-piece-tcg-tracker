@@ -35,5 +35,5 @@ for (let bucket = 0; bucket < 256; bucket++) {
 }
 if (!Object.keys(rows).length) throw new Error('Market summary is empty');
 const output = process.argv[2] || path.join(__dirname, 'market-summary.json');
-fs.writeFileSync(output, JSON.stringify({ version: 1, day, sourceUpdatedAt, rows }) + '\n');
+fs.writeFileSync(output, JSON.stringify({ version: market.summaryVersion, day, sourceUpdatedAt, rows }) + '\n');
 console.log('Published market summary for ' + Object.keys(rows).length + ' price series');
