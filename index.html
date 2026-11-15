@@ -41,7 +41,7 @@
 <link rel="apple-touch-icon" href="icons/vault-192.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/vault-192.png">
 
-<link rel="stylesheet" href="styles.css?v=3.5.0">
+<link rel="stylesheet" href="styles.css?v=3.6.0">
 </head>
 <body>
 
@@ -137,28 +137,41 @@
     </section>
 
     <dialog class="catalog-dialog" id="scan-dialog" aria-labelledby="scan-title">
-      <div class="history-toolbar"><h2 id="scan-title">Scan Card</h2><button class="btn" id="scan-close" type="button" autofocus>Close</button></div>
-      <p>Frame one upright card and keep its bottom-right corner clear. Photos are processed on this device and discarded after scanning.</p>
-      <div class="scan-actions">
-        <button class="btn primary" id="scan-camera" type="button">Use camera</button>
-        <label class="btn scan-pick">Choose photo<input id="scan-file" type="file" accept="image/*" class="visually-hidden"></label>
+      <header class="scan-header">
+        <h2 id="scan-title">Scan Card</h2>
+        <button class="btn dialog-close" id="scan-close" type="button" aria-label="Close scanner" autofocus><span aria-hidden="true">×</span></button>
+      </header>
+      <div class="scan-content">
+        <div class="scan-viewfinder" id="scan-viewfinder" hidden>
+          <video id="scan-video" autoplay playsinline muted aria-label="Camera preview"></video>
+          <span class="scan-guide" id="scan-guide" aria-hidden="true" hidden></span>
+        </div>
+        <div id="scan-entry">
+          <p class="small muted scan-privacy">Photos are scanned on your device and discarded.</p>
+          <p id="scan-status" class="small" role="status" tabindex="-1"></p>
+          <form id="scan-lookup" class="scan-lookup">
+            <label class="fld"><span>Card number</span><input id="scan-number" type="text" placeholder="OP01-120" autocomplete="off" autocapitalize="characters" enterkeyhint="search" spellcheck="false" required></label>
+            <button class="btn" type="submit">Find matches</button>
+          </form>
+          <label class="scan-star"><input type="checkbox" id="scan-star"> Show starred printings first</label>
+          <div id="scan-results" class="catalog-grid" aria-label="Matching printings"></div>
+        </div>
       </div>
-      <div class="scan-viewfinder" id="scan-viewfinder" hidden>
-        <video id="scan-video" autoplay playsinline muted aria-label="Camera preview"></video>
-        <span aria-hidden="true"></span>
+      <div class="scan-footer">
+        <div class="scan-actions" id="scan-options">
+          <label class="btn scan-pick">Choose photo<input id="scan-file" type="file" accept="image/*" class="visually-hidden"></label>
+          <button class="btn primary" id="scan-camera" type="button">Use camera</button>
+        </div>
+        <div class="scan-actions" id="scan-controls" hidden>
+          <p class="scan-hint small muted">Fit one card inside the outline. Keep the card number clear.</p>
+          <button class="btn ghost" id="scan-cancel-camera" type="button">Cancel camera</button>
+          <button class="btn primary" id="scan-capture" type="button" disabled>Scan card</button>
+        </div>
       </div>
-      <button class="btn primary" id="scan-capture" type="button" hidden>Scan photo</button>
-      <p id="scan-status" class="small" role="status"></p>
-      <form id="scan-lookup" class="scan-lookup">
-        <label class="fld"><span>Card number</span><input id="scan-number" type="text" placeholder="OP01-120" autocomplete="off" spellcheck="false" required></label>
-        <button class="btn" type="submit">Find matches</button>
-      </form>
-      <label class="scan-star"><input type="checkbox" id="scan-star"> Prioritize starred printings</label>
-      <div id="scan-results" class="catalog-grid" aria-label="Matching printings"></div>
     </dialog>
     <dialog class="catalog-dialog" id="catalog-dialog" aria-labelledby="catalog-card-title">
       <div class="catalog-dialog-top">
-        <button class="btn" id="catalog-close" type="button" autofocus>Close</button>
+        <button class="btn dialog-close" id="catalog-close" type="button" aria-label="Close card details" autofocus><span aria-hidden="true">×</span></button>
       </div>
       <div class="card-workspace">
       <div id="catalog-preview"></div>
@@ -234,18 +247,18 @@
     </dialog>
     <dialog class="catalog-dialog" id="set-analysis-dialog" aria-labelledby="set-analysis-title">
       <div class="catalog-dialog-top">
-        <button class="btn" id="set-analysis-close" type="button" autofocus>Close</button>
+        <h2 id="set-analysis-title"></h2>
+        <button class="btn dialog-close" id="set-analysis-close" type="button" aria-label="Close set analysis" autofocus><span aria-hidden="true">×</span></button>
       </div>
-      <h2 id="set-analysis-title"></h2>
       <label class="fld" id="set-box-picker"><span>Booster box printing</span><select id="set-box-product"></select></label>
       <div id="set-analysis-body"></div>
       <section class="price-history" id="set-analysis-chart" aria-label="Booster box price history"></section>
     </dialog>
     <dialog class="catalog-dialog" id="sealed-history-dialog" aria-labelledby="sealed-history-title">
       <div class="catalog-dialog-top">
-        <button class="btn" id="sealed-history-close" type="button" autofocus>Close</button>
+        <h2 id="sealed-history-title"></h2>
+        <button class="btn dialog-close" id="sealed-history-close" type="button" aria-label="Close price history" autofocus><span aria-hidden="true">×</span></button>
       </div>
-      <h2 id="sealed-history-title"></h2>
       <section class="price-history" id="sealed-history-chart" aria-label="Sealed price history"></section>
     </dialog>
 
@@ -417,6 +430,7 @@
           The sealed call starts with the lowest-listed box in the catalog. Box price and return use your opening-model settings.
           <span id="sets-analysis-status" role="status"></span>
           <button class="btn small" id="sets-analysis-retry" type="button" hidden>Retry analysis</button>
+          <label class="fld sets-sort-mobile"><span>Sort sets</span><select id="sets-sort"></select></label>
         </div>
         <div class="tbl-scroll">
           <table class="tbl" id="sets-tbl">
@@ -633,6 +647,6 @@ if ('serviceWorker' in navigator) {
 <script src="market-analysis.js?v=3.3.0"></script>
 <script src="card-scan.js?v=3.2.0"></script>
 <script src="backup.js?v=3.5.0"></script>
-<script src="app.js?v=3.5.1"></script>
+<script src="app.js?v=3.6.0"></script>
 </body>
 </html>

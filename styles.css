@@ -1270,16 +1270,98 @@ button.binder-art { cursor: pointer; }
 
 
 .scan-launch { margin-top: 10px; }
-#scan-dialog #scan-title { margin: 0; }
-.scan-actions, .scan-lookup { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin-block: 12px; }
-.scan-lookup label.fld { margin: 0; flex: 1 1 140px; }
-.scan-pick { cursor: pointer; display: inline-grid; place-items: center; color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); padding: 8px 15px; min-height: 38px; border-radius: var(--r-s); font-size: 13px; font-weight: 650; }
-.scan-pick:focus-within { outline: 2px solid var(--sea); }
-.scan-viewfinder { position: relative; max-width: 380px; margin: 10px auto; overflow: hidden; border-radius: 12px; background: #17213b; }
-.scan-viewfinder video { display: block; width: 100%; }
-.scan-viewfinder span { position: absolute; width: var(--guide-width, 72%); height: var(--guide-height, 86%); top: 50%; left: 50%; transform: translate(-50%, -50%); border: 2px solid white; border-radius: 5px; box-shadow: 0 0 0 300px #0005; pointer-events: none; }
-#scan-results { margin-top: 12px; }
+.sets-sort-mobile { display: none; }
+.catalog-dialog { overscroll-behavior: contain; }
+body:has(dialog[open]) { overflow: hidden; }
+.catalog-dialog-top, .scan-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.catalog-dialog-top { background: var(--panel); padding-block: 2px 7px; pointer-events: auto; }
+.catalog-dialog-top > :only-child { margin-inline-start: auto; }
+.catalog-dialog-top h2, .scan-header h2 { margin: 0; line-height: 1.15; overflow-wrap: anywhere; }
+button.dialog-close {
+  display: grid; place-items: center; flex: 0 0 44px; width: 44px; min-height: 44px;
+  padding: 0; border-radius: 50%; font-size: 25px; line-height: 1;
+}
+
+#scan-dialog {
+  --scan-inset: calc(max(10px, env(safe-area-inset-top)) + max(10px, env(safe-area-inset-bottom)));
+  width: min(580px, calc(100% - 20px)); max-height: calc(100dvh - var(--scan-inset));
+  padding: 0; overflow: hidden;
+}
+#scan-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+#scan-dialog.camera-active { height: min(710px, calc(100dvh - var(--scan-inset))); }
+.scan-header { padding: 10px 16px; border-bottom: 1px solid var(--line-soft); }
+.scan-header h2 { font-size: 22px; }
+.scan-content { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 14px 16px; }
+.camera-active .scan-content { display: grid; overflow: hidden; padding: 8px 12px; }
+.scan-footer { padding: 10px 16px; border-top: 1px solid var(--line-soft); background: var(--bg-2); }
+.scan-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.scan-actions .btn { min-height: 46px; }
+#scan-capture { min-width: min(145px, 100%); }
+.scan-hint { flex: 0 0 100%; margin: 0 0 1px; text-align: center; }
+.scan-privacy { margin: 0 0 10px; }
+#scan-status:empty, #scan-results:empty { display: none; }
+#scan-status { margin: 0 0 12px; }
+.scan-lookup { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+.scan-lookup label.fld { min-width: 0; margin: 0; }
+.scan-lookup :is(input, button) { min-height: 44px; }
+.scan-star { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; }
+.scan-star input { width: 18px; height: 18px; margin: 0; accent-color: var(--sea); }
+.scan-pick {
+  cursor: pointer; display: inline-grid; place-items: center; color: var(--ink);
+  background: var(--panel-2); border: 1px solid var(--line); padding: 8px 14px;
+  border-radius: var(--r-s); font-size: 13px; font-weight: 650;
+}
+.scan-pick:focus-within { outline: 2px solid var(--sea); outline-offset: 2px; }
+.scan-viewfinder { position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: 12px; background: #111a2c; }
+.scan-viewfinder video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.scan-guide {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  border: 2px solid white; border-radius: 6px; box-shadow: 0 0 0 100vmax #0005; pointer-events: none;
+}
+#scan-results { margin-top: 10px; grid-template-columns: repeat(auto-fit, minmax(116px, 1fr)); }
+#scan-results .catalog-tile { max-width: 168px; }
+
+select {
+  appearance: none;
+  max-width: 100%;
+  padding-inline-end: 30px;
+  text-overflow: ellipsis;
+  background: linear-gradient(45deg, transparent 50%, var(--sea) 50%) right 16px center / 5px 5px no-repeat,
+    linear-gradient(135deg, var(--sea) 50%, transparent 50%) right 11px center / 5px 5px no-repeat,
+    var(--bg);
+}
+select:hover:enabled { border-color: var(--sea); }
+@supports (appearance: base-select) and selector(::picker(select)) {
+  select, select::picker(select) { appearance: base-select; }
+  select { background: var(--bg); gap: 7px; padding-inline-end: 10px; }
+  select::picker-icon { flex: none; color: var(--sea); }
+  select::picker(select) {
+    border: 1px solid var(--line); border-radius: var(--r-s); box-shadow: var(--shadow);
+    background: var(--panel); color: var(--ink);
+    max-width: min(32rem, calc(100vw - 16px)); max-height: min(55dvh, 25rem);
+    padding: 4px; margin-block: 4px; overscroll-behavior: contain;
+  }
+  select option { color: var(--ink); min-height: 40px; padding: 8px; border-radius: 5px; white-space: normal; }
+  select option:checked { background: #e4edff; color: #173577; font-weight: 650; }
+  select option:focus-visible, select option:hover:enabled { background: #edf3fe; color: #173577; }
+  select option:disabled { opacity: .65; }
+  select option::checkmark { color: var(--sea); }
+}
+
 @media (max-width: 760px) {
-  .scan-launch { grid-row: 4; grid-column: 1 / -1; justify-self: start; }
-  .scan-pick { min-height: 44px; }
+  .scan-launch { grid-row: 4; grid-column: 1 / -1; justify-self: end; }
+  .nav-toggle, button.scan-launch { min-height: 44px; }
+  html { scroll-padding-top: 72px; }
+  .catalog-toolbar { gap: 10px; }
+  .catalog-toolbar label { min-width: 0; }
+  #catalog-preview { align-self: start; }
+  #catalog-dialog .card-workspace { grid-template-columns: minmax(76px, 25%) minmax(0, 1fr); align-items: start; }
+  .card-workspace-content { display: contents; }
+  .card-workspace-content > :not(#catalog-card) { grid-column: 1 / -1; }
+  .catalog-quotes > div { padding: 6px; min-width: 0; }
+  .catalog-quotes dd { font-size: 16px; overflow-wrap: anywhere; }
+  .segmented button { min-height: 44px; }
+  select, input[type="search"], input[type="url"] { min-height: 44px; }
+  .sets-sort-mobile { display: block; margin: 12px 0 0; }
+  #score-body .tbl-scroll { max-height: none !important; }
 }

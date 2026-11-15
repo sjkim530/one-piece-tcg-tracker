@@ -1016,9 +1016,9 @@
             <tbody>${list.map(p => `
               <tr>
                 <td>${esc(p.name)}</td>
-                <td class="num"><b>${E.money(p.market_price)}</b></td>
-                <td class="num muted">${p.low_price ? E.money(p.low_price) : '—'}</td>
-                <td><button class="btn small" type="button" data-sealed-history="${esc(p.id)}">Chart</button></td>
+                <td class="num" data-l="Market price"><b>${E.money(p.market_price)}</b></td>
+                <td class="num muted" data-l="Lowest listing">${p.low_price ? E.money(p.low_price) : '—'}</td>
+                <td data-l="Price history"><button class="btn small" type="button" data-sealed-history="${esc(p.id)}">Chart</button></td>
                 <td class="num">${p.buy_url
                   ? `<a class="btn ghost small" href="${esc(p.buy_url)}" target="_blank" rel="noopener nofollow">Buy</a>`
                   : ''}</td>
@@ -1577,6 +1577,9 @@
     const tbody = $('#sets-tbl tbody');
     const rows = setRows();
     const { by, dir } = S.sort.sets;
+    $('#sets-sort').value = by + ':' + dir;
+    $$('#sets-tbl th[data-sort]').forEach(th => th.setAttribute('aria-sort',
+      th.dataset.sort === by ? (dir === 1 ? 'ascending' : 'descending') : 'none'));
     rows.sort((a, b) => {
       const av = a[by], bv = b[by];
       if (av == null) return 1;
@@ -1591,22 +1594,22 @@
           <b>${esc(r.short)}</b> <span class="muted small">${esc(r.name)}</span></button>
           ${r.unverified ? ' <span class="tag est">? unverified pack structure</span>' : ''}</td>
         <td data-l="Sealed call"><button class="btn small market-call" type="button" data-set-call="${esc(r.id)}"></button></td>
-        <td class="num" data-l="Box price">${E.money(r.box)}${r.est ? ' <span class="tag est">EST</span>' : ''}</td>
+        <td class="num" data-l="Box price"><span>${E.money(r.box)}${r.est ? ' <span class="tag est">EST</span>' : ''}</span></td>
         <td class="num" data-l="Case">${r.case_ == null ? '<span class="muted">—</span>' : E.money(r.case_)}</td>
         <td class="num" data-l="EV / box">${E.money(r.evBox)}</td>
         <td class="num" data-l="EV / pack">${E.money(r.evPack)}</td>
-        <td class="num ${r.roi == null ? '' : r.roi >= 0 ? 'up' : 'down'}">
+        <td data-l="Return" class="num ${r.roi == null ? '' : r.roi >= 0 ? 'up' : 'down'}">
           <b>${r.roi == null ? '—' : (r.roi >= 0 ? '+' : '') + E.pct(r.roi, 0)}</b></td>
-        <td class="num">
+        <td class="num" data-l="Top-5 share">
           <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
             <span>${E.pct(r.conc, 0)}</span>
             <span class="bar brass" style="width:52px"><i style="width:${Math.min(100, r.conc * 100).toFixed(0)}%"></i></span>
           </div></td>
-        <td class="num">${E.money(r.best)}${r.bestCard
-          ? `<div class="small muted" style="font-weight:400">${esc(r.bestCard.card.card_name.slice(0, 22))}</div>` : ''}</td>
-        <td class="num">${E.money(r.over5)}
-          <div class="small muted" style="font-weight:400">${r.over5Count} cards</div></td>
-        <td class="num muted">${r.cards}</td>
+        <td class="num" data-l="Biggest hit"><div>${E.money(r.best)}${r.bestCard
+          ? `<div class="small muted">${esc(r.bestCard.card.card_name.slice(0, 22))}</div>` : ''}</div></td>
+        <td class="num" data-l="Singles ≥$5"><div>${E.money(r.over5)}
+          <div class="small muted">${r.over5Count} cards</div></div></td>
+        <td class="num muted" data-l="Cards">${r.cards}</td>
       </tr>`).join('');
 
     /* The whole row stays clickable for the mouse, but the actionable element
@@ -2346,10 +2349,10 @@
         </tr></thead><tbody>
         ${sb.rows.map(r => `<tr>
           <td><b>${esc(r.name)}</b></td>
-          <td class="num">${r.boxes || '—'}</td>
-          <td class="num">${E.money(r.spent)}</td>
-          <td class="num">${E.money(r.pulledValue)}</td>
-          <td class="num ${r.incomplete ? 'muted' : r.net >= 0 ? 'up' : 'down'}">
+          <td class="num" data-l="Boxes">${r.boxes || '—'}</td>
+          <td class="num" data-l="Spent">${E.money(r.spent)}</td>
+          <td class="num" data-l="Pulled value">${E.money(r.pulledValue)}</td>
+          <td data-l="Net" class="num ${r.incomplete ? 'muted' : r.net >= 0 ? 'up' : 'down'}">
             <b>${r.incomplete ? '—' : (r.net >= 0 ? '+' : '−') + E.money(Math.abs(r.net))}</b></td>
           <td class="num small muted">${r.incomplete ? 'no pulls logged yet' : ''}</td>
         </tr>`).join('')}
@@ -3574,6 +3577,10 @@
     const dialog = $('#scan-dialog');
     const video = $('#scan-video');
     const viewfinder = $('#scan-viewfinder');
+    const guide = $('#scan-guide');
+    const entry = $('#scan-entry');
+    const options = $('#scan-options');
+    const controls = $('#scan-controls');
     const capture = $('#scan-capture');
     const camera = $('#scan-camera');
     const file = $('#scan-file');
@@ -3585,12 +3592,20 @@
     let job;
     let cameraRequest;
 
+    function cameraMode(active) {
+      dialog.classList.toggle('camera-active', active);
+      entry.hidden = options.hidden = active;
+      viewfinder.hidden = controls.hidden = !active;
+      capture.disabled = guide.hidden = true;
+    }
+
     function stopCamera() {
       cameraRequest = null;
       stream?.getTracks().forEach(track => track.stop());
       stream = null;
       video.srcObject = null;
-      viewfinder.hidden = capture.hidden = true;
+      camera.disabled = false;
+      cameraMode(false);
     }
 
     function showMatches(numbers) {
@@ -3645,18 +3660,25 @@
       number.value = status.textContent = '';
       star.checked = false;
       results.replaceChildren();
+      $('.scan-content', dialog).scrollTop = 0;
       dialog.showModal();
     });
-    on('#scan-close', 'click', () => dialog.close());
-    dialog.addEventListener('close', () => {
+    function closeScanner() {
       job?.abort();
       stopCamera();
       file.value = '';
+      dialog.close();
+    }
+    on('#scan-close', 'click', closeScanner);
+    dialog.addEventListener('cancel', event => {
+      event.preventDefault();
+      closeScanner();
     });
     camera.addEventListener('click', async () => {
       job?.abort();
       stopCamera();
       const request = cameraRequest = {};
+      camera.disabled = true;
       status.textContent = 'Waiting for camera access…';
       try {
         const next = await navigator.mediaDevices.getUserMedia({
@@ -3669,13 +3691,26 @@
         }
         stream = next;
         video.srcObject = stream;
-        viewfinder.hidden = capture.hidden = false;
-        status.textContent = 'Fit the whole card inside the outline.';
+        next.getVideoTracks()[0]?.addEventListener('ended', () => {
+          if (stream !== next) return;
+          stopCamera();
+          status.textContent = 'Camera disconnected. Reopen it or choose a photo.';
+          status.focus();
+        }, { once: true });
+        cameraMode(true);
+        $('#scan-cancel-camera').focus({ preventScroll: true });
+        updateGuide();
       } catch (_) {
         if (dialog.open && cameraRequest === request) {
+          camera.disabled = false;
           status.textContent = 'Camera unavailable. Choose a photo or enter a card number.';
         }
       }
+    });
+    on('#scan-cancel-camera', 'click', () => {
+      stopCamera();
+      status.textContent = '';
+      camera.focus();
     });
     function crop() {
       const { videoWidth: width, videoHeight: height } = video;
@@ -3684,18 +3719,27 @@
       const w = frameWidth / width, h = frameWidth * 7 / 5 / height;
       return [(1 - w) / 2, (1 - h) / 2, w, h];
     }
-    video.addEventListener('resize', () => {
+    function updateGuide() {
+      if (viewfinder.hidden) return;
       const region = crop();
       if (!region) return;
-      viewfinder.style.setProperty('--guide-width', region[2] * 100 + '%');
-      viewfinder.style.setProperty('--guide-height', region[3] * 100 + '%');
-    });
+      const scale = Math.min(video.clientWidth / video.videoWidth, video.clientHeight / video.videoHeight);
+      guide.style.width = region[2] * video.videoWidth * scale + 'px';
+      guide.style.height = region[3] * video.videoHeight * scale + 'px';
+      guide.hidden = scale === 0;
+      capture.disabled = video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA;
+    }
+    video.addEventListener('resize', updateGuide);
+    video.addEventListener('loadeddata', updateGuide);
+    video.addEventListener('playing', updateGuide);
+    new ResizeObserver(updateGuide).observe(viewfinder);
     capture.addEventListener('click', () => {
       const region = crop();
       if (!region || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
       const frame = OQ_SCAN.picture(video, { width: video.videoWidth, height: video.videoHeight }, region);
       stopCamera();
       scan(() => frame);
+      status.focus({ preventScroll: true });
     });
     file.addEventListener('change', () => {
       const photo = file.files[0];
@@ -3722,7 +3766,7 @@
     results.addEventListener('click', event => {
       const match = event.target.closest('[data-key]');
       if (!match) return;
-      dialog.close();
+      closeScanner();
       openCatalogCard(match.dataset.key);
     });
   }
@@ -3886,6 +3930,12 @@
     on('#tabs', 'click', () => {
       if ($('#nav-toggle').offsetWidth) $('#nav-toggle').focus();
     });
+    document.addEventListener('click', event => {
+      const toggle = $('#nav-toggle');
+      if (toggle.getAttribute('aria-expanded') !== 'true' || event.target.closest('#nav-toggle, #tabs')) return;
+      toggle.setAttribute('aria-expanded', 'false');
+      if ($('#tabs').contains(document.activeElement)) toggle.focus();
+    });
     on('#collection-mode', 'click', event => {
       const button = event.target.closest('[data-binder-mode]');
       if (!button) return;
@@ -3994,7 +4044,19 @@
 
     wireSignals();
 
-    $$('#sets-tbl th.sortable').forEach(th => th.addEventListener('click', () => {
+    const setSortHeaders = $$('#sets-tbl th[data-sort]');
+    catalogOptions($('#sets-sort'), setSortHeaders.flatMap(th => {
+      const by = th.dataset.sort;
+      const label = th.textContent.trim();
+      return by === 'name' ? [[by + ':1', 'Set name (A–Z)'], [by + ':-1', 'Set name (Z–A)']]
+        : [[by + ':-1', label + ' (high to low)'], [by + ':1', label + ' (low to high)']];
+    }));
+    on('#sets-sort', 'change', event => {
+      const [by, dir] = event.currentTarget.value.split(':');
+      S.sort.sets = { by, dir: Number(dir) };
+      renderSets();
+    });
+    setSortHeaders.forEach(th => th.addEventListener('click', () => {
       const by = th.dataset.sort;
       S.sort.sets = { by, dir: S.sort.sets.by === by ? -S.sort.sets.dir : -1 };
       renderSets();
