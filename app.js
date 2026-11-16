@@ -2113,7 +2113,7 @@
     const cols = liveCols();
     if (!cols.length) return null;
     let c = cols.find(x => x.id === S.curCol);
-    if (!c) { c = cols[0]; S.curCol = c.id; }
+    if (!c) { c = cols.find(col => col.kind === 'keep') || cols[0]; S.curCol = c.id; }
     return c;
   }
 
@@ -2135,16 +2135,18 @@
 
     host.innerHTML = `
       <div class="note ${stuck ? 'warn' : ''} small" style="margin-bottom:14px">
-        <b>Collection updated for v2.</b>
-        ${r.migrated ? `${r.migrated} row${r.migrated === 1 ? '' : 's'} repointed to the new
-          card ids.` : ''}
+        <b>Older binder entries</b>
+        ${r.migrated ? `<br>${r.migrated} ${r.migrated === 1 ? 'entry linked' : 'entries linked'} to the current catalog.` : ''}
         ${stuck ? `<br><b>${stuck} row${stuck === 1 ? '' : 's'} could not be matched</b> and
           ${stuck === 1 ? 'was' : 'were'} left exactly as ${stuck === 1 ? 'it was' : 'they were'} —
           nothing was deleted. ${r.ambiguous ? `${r.ambiguous} matched more than one card. ` : ''}
           Re-add ${stuck === 1 ? 'it' : 'them'} by hand and delete the old row.
           ${r.examples && r.examples.length
             ? `<br><span class="mono muted" style="font-size:11px">${
-                 r.examples.map(esc).join('<br>')}</span>` : ''}`
+                 r.examples.map(key => {
+                   const item = C.legacyIdentity(key);
+                   return esc(item ? [item.name, item.number].filter(Boolean).join(' · ') : 'Unlinked card');
+                 }).join('<br>')}</span>` : ''}`
           : ' Everything matched.'}
         <br><button class="btn ghost small" id="mig-dismiss" style="margin-top:8px">Dismiss</button>
       </div>`;
@@ -2568,17 +2570,18 @@
     const tokens = query ? query.split(' ') : [];
     const sort = $('#col-sort').value;
     const sellOnly = $('#col-sell').getAttribute('aria-pressed') === 'true';
-    const rows = items.filter(item => {
-      if (sellOnly && !isSellNow(item)) return false;
+    const rows = items.filter(item => !sellOnly || isSellNow(item)).map(it => {
+      const card = S.byKey[it.key];
+      const legacy = C.legacyIdentity(it.key);
+      const number = card?.card_type === 'DON!!' ? 'DON!!' : card?.card_set_id || legacy?.number || (legacy?.don ? 'DON!!' : '');
+      const title = card ? C.cardTitle(card.card_name, number) : legacy?.name || 'Unlinked card';
+      return { it, card, title, number, qty: C.qtyOf(it), each: C.unitValue(it, priceForKey) };
+    }).filter(({ title, number }) => {
       if (!query) return true;
-      const card = S.byKey[item.key];
-      const number = searchWords(card?.card_set_id).replace(/ /g, '');
-      const search = searchWords(card?.card_name || item.key);
-      return number.startsWith(tokens.join('')) || tokens.every(token => (search + ' ' + number).includes(token));
-    }).map(it => ({
-      it, card: S.byKey[it.key], qty: C.qtyOf(it), each: C.unitValue(it, priceForKey)
-    })).sort((a, b) => {
-      const byName = () => String(a.card?.card_name || a.it.key).localeCompare(String(b.card?.card_name || b.it.key));
+      const numberKey = searchWords(number).replace(/ /g, '');
+      return numberKey.startsWith(tokens.join('')) || tokens.every(token => (searchWords(title) + ' ' + numberKey).includes(token));
+    }).sort((a, b) => {
+      const byName = () => a.title.localeCompare(b.title);
       if (sort === 'name') return byName();
       if (sort === 'qty') return b.qty - a.qty || byName();
       return (b.each ?? -1) * b.qty - (a.each ?? -1) * a.qty || byName();
@@ -2602,24 +2605,24 @@
     $('#col-price-source').textContent = ['Raw values use market references across conditions. Manual values override them.',
       catalogDate()].filter(Boolean).join(' ');
 
-    gallery.innerHTML = rows.map(({ it, card, each, qty }) => {
-      const title = esc(card?.card_name || it.key);
+    gallery.innerHTML = rows.map(({ it, card, title, number, each, qty }) => {
       const state = C.isGraded(it) ? [it.grader, it.grade].join(' ') : it.cond;
       const printing = holdingPrinting(it, card);
       const finishLabel = printing == null && card?.alt_printing
-        ? 'Confirm finish in Edit' : printing || 'Finish unavailable';
+        ? 'Confirm finish in Edit' : printing || (card ? 'Finish unavailable' : 'Catalog match needed');
       return `<article class="binder-card">
-        ${card ? `<button class="binder-art" type="button" data-key="${esc(it.key)}" data-printing="${esc(printing)}" aria-label="View ${title}">${cardArt(card)}</button>`
-          : '<div class="binder-art noart"><span>No card artwork</span></div>'}
-        <div class="binder-card-info"><strong>${title}</strong>
+        ${card ? `<button class="binder-art" type="button" data-key="${esc(it.key)}" data-printing="${esc(printing)}" aria-label="View ${esc(title)}">${cardArt(card)}</button>`
+          : '<div class="binder-art noart"><span>Artwork unavailable</span></div>'}
+        <div class="binder-card-info"><span class="binder-number">${esc(number)}</span><strong>${esc(title)}</strong>
           <span class="small muted">${esc(finishLabel)} · ${esc(state || 'Raw')} · ${qty} ${qty === 1 ? 'copy' : 'copies'}</span>
-          <b>${each == null ? 'Unpriced' : E.money(each * qty, 2)}</b>
+          <div class="binder-values"><b>${each == null ? 'Unpriced' : E.money(each * qty, 2) + (qty > 1 ? ' <small>total</small>' : '')}</b>
+          ${each != null && qty > 1 ? `<span class="small muted">${E.money(each, 2)} each</span>` : ''}</div>
           <span class="market-call" data-call="Sell Now" data-sell-badge="${esc(it.id)}" hidden>Review for sale</span>
         </div>
       </article>`;
     }).join('') || '<p class="catalog-empty">' + (items.length ? 'No cards match these filters.' : 'This binder is empty. Find cards to start your collection.') + '</p>';
 
-    tbody.innerHTML = rows.map(({ it, card, each, qty }) => {
+    tbody.innerHTML = rows.map(({ it, card, title, number, each, qty }) => {
       const graded = C.isGraded(it);
       const manual = C.amount(it.value);
       const printing = holdingPrinting(it, card);
@@ -2627,33 +2630,33 @@
       return `<tr data-id="${esc(it.id)}">
         <td><div class="cardcell">
           ${card?.card_image ? `<img src="${esc(card.card_image)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : ''}
-          <div class="nm">${card ? `<button type="button" class="collection-card-link" data-key="${esc(it.key)}" data-printing="${esc(printing)}">${esc(card.card_name)}</button>` : `<b>${esc(it.key)}</b>`}
-            <span>${esc(card ? card.card_set_id : '')}</span>
+          <div class="nm">${card ? `<button type="button" class="collection-card-link" data-key="${esc(it.key)}" data-printing="${esc(printing)}">${esc(title)}</button>` : `<b>${esc(title)}</b>`}
+            <span>${esc(number)}</span>
             <button type="button" class="market-call collection-card-sell" data-call="Sell Now"
               data-sell-badge="${esc(it.id)}" data-key="${esc(it.key)}" data-printing="${esc(printing)}" hidden>Review for sale</button></div>
         </div></td>
         <td data-l="Set"><span class="tag">${esc(card ? setShort(card.set_id) : '—')}</span></td>
-        <td data-l="State">
+        <td data-l="State"><div class="holding-state">
           ${finishes.length > 1 || printing && !finishes.includes(printing)
             ? `<select class="it-printing" data-id="${esc(it.id)}" aria-label="Finish">
                  <option value="" disabled${printing ? '' : ' selected'}>Confirm finish</option>
                  ${printing && !finishes.includes(printing) ? `<option selected disabled>${esc(printing)} · unavailable</option>` : ''}
                  ${finishes.map(finish => `<option value="${esc(finish)}"${printing === finish ? ' selected' : ''}>${esc(finish)}</option>`).join('')}
                </select>`
-            : printing ? `<span class="small muted">${esc(printing)}</span>` : ''}
-          <select class="it-grader" data-id="${esc(it.id)}" style="width:auto;display:inline-block;padding:4px 6px;font-size:12px">
+            : printing ? `<span class="holding-finish">${esc(printing)}</span>` : ''}
+          <select class="it-grader" data-id="${esc(it.id)}" aria-label="Grading company">
             <option value="">Raw</option>
             ${D.GRADERS.map(g => `<option value="${g}"${it.grader === g ? ' selected' : ''}>${g}</option>`).join('')}
           </select>
           ${graded
-            ? `<select class="it-grade" data-id="${esc(it.id)}" style="width:auto;display:inline-block;padding:4px 6px;font-size:12px">
+            ? `<select class="it-grade" data-id="${esc(it.id)}" aria-label="Grade">
                  ${[10,9.5,9,8.5,8,7,6,5,4,3,2,1].map(g =>
                    `<option value="${g}"${String(it.grade) === String(g) ? ' selected' : ''}>${g}</option>`).join('')}
                </select>`
-            : `<select class="it-cond" data-id="${esc(it.id)}" style="width:auto;display:inline-block;padding:4px 6px;font-size:12px">
+            : `<select class="it-cond" data-id="${esc(it.id)}" aria-label="Condition">
                  ${D.CONDITIONS.map(c => `<option value="${c.code}"${it.cond === c.code ? ' selected' : ''}>${c.code}</option>`).join('')}
                </select>`}
-        </td>
+        </div></td>
         <td class="num" data-l="Qty"><input type="number" class="it-qty" data-id="${esc(it.id)}" min="0" step="1"
              value="${qty}" style="width:62px;text-align:right;padding:4px 6px;font-size:12px"></td>
         <td class="num" data-l="Each">${graded || manual != null
@@ -2668,14 +2671,12 @@
              title="What you paid, per copy"></td>
         <td class="num" data-l="Value"><b>${each == null ? '—' : E.money(each * qty, 2)}</b></td>
         <td class="num acts" data-l="">
-          <select class="it-src" data-id="${esc(it.id)}" title="Pulled cards count as winnings in the scoreboard"
-                  style="width:auto;display:inline-block;padding:4px 6px;font-size:12px">
+          <select class="it-src" data-id="${esc(it.id)}" aria-label="Acquired by" title="Pulled cards count as winnings in the scoreboard">
             <option value="pull"${it.src !== 'buy' ? ' selected' : ''}>pulled</option>
             <option value="buy"${it.src === 'buy' ? ' selected' : ''}>bought</option>
           </select>
           ${others.length ? `
-          <select class="it-move" data-id="${esc(it.id)}" title="Move to another binder, keeping everything"
-                  style="width:auto;display:inline-block;padding:4px 6px;font-size:12px">
+          <select class="it-move" data-id="${esc(it.id)}" aria-label="Move to another binder">
             <option value="">move…</option>
             ${others.map(o => `<option value="${esc(o.id)}">→ ${esc(o.name)}</option>`).join('')}
           </select>` : ''}
@@ -2885,6 +2886,7 @@
         return;
       }
       applyCollection(next);
+      runKeyMigration();
       S.curCol = null;
       clearPreview();
       status.textContent = 'Backup restored on this device.';
@@ -3311,7 +3313,7 @@
         const name = searchWords(card.card_name);
         const number = searchWords(card.card_set_id).replace(/ /g, '');
         return {
-          card, badge, name, number,
+          card, badge, name, number, title: C.cardTitle(card.card_name, card.card_set_id),
           terms: searchWords([card.card_name, card.card_set_id, card.set_id,
             card.set_name, setLabels.get(card.set_id), badge.label, card.card_type,
             card.subtypes, card.attribute, card.rulesText].join(' '))
@@ -3342,7 +3344,10 @@
     const code = query.replace(/ /g, '');
     const sort = $('#catalog-sort').value;
     const matches = [];
-    for (const row of S.catalogIndex || []) {
+    const rows = S.catalogIndex || [];
+    const matchesIdentity = row => row.number.startsWith(code) || tokens.every(token => row.name.includes(token));
+    const identitySearch = query && rows.some(matchesIdentity);
+    for (const row of rows) {
       const { card } = row;
       if (set && card.set_id !== set || rarity && row.badge.label !== rarity ||
           type && card.card_type !== type || color && !hasColor(card, color)) continue;
@@ -3351,7 +3356,7 @@
         if (code === row.number) score = 4;
         else if (query === row.name) score = 3;
         else if (row.name.startsWith(query) || row.number.startsWith(code)) score = 2;
-        else if (tokens.every(token => row.terms.includes(token))) score = 1;
+        else if (identitySearch ? matchesIdentity(row) : tokens.every(token => row.terms.includes(token))) score = 1;
         else continue;
       }
       matches.push({ row, score });
@@ -3369,6 +3374,8 @@
       return (sort === 'price-low' ? priceA - priceB : priceB - priceA) || byName();
     });
     const count = [set, rarity, type, color].filter(Boolean).length;
+    $('#catalog-results-title').textContent = !query ? 'Browse cards' :
+      (!identitySearch && matches.length ? 'Card text matches' : 'Search results');
     $('#catalog-filter-count').textContent = count ? '(' + count + ')' : '';
     $('#catalog-clear').hidden = count === 0;
     $('#catalog-count').textContent = matches.length
@@ -3382,7 +3389,7 @@
         <span class="catalog-frame">${cardArt(card, 'catalog-art')}${rarityChip(card)}</span>
         <span class="catalog-tile-body">
           <span class="catalog-tile-number">${esc(card.card_set_id || card.set_id)}</span>
-          <strong>${esc(card.card_name)}</strong>
+          <strong>${esc(row.title)}</strong>
           <span class="catalog-tile-meta">${esc(card.set_name || setName(card.set_id))}</span>
           <span class="catalog-tile-price">${catalogPrice(card.market_price)}</span>
         </span>
@@ -3416,7 +3423,7 @@
     $('#catalog-preview').innerHTML = cardArt(card, 'catalog-art');
     $('#catalog-card').innerHTML = `<div class="card-identity">
         <div class="small muted">${esc(card.card_set_id || card.set_id)} · ${esc(badge.label)}</div>
-        <h2 id="catalog-card-title">${esc(card.card_name)}</h2>
+        <h2 id="catalog-card-title">${esc(C.cardTitle(card.card_name, card.card_set_id))}</h2>
         <p class="small muted">${esc(card.set_name || setName(card.set_id))}</p>
         ${reprints.length ? `<p class="small muted">Same card number also in ${esc(reprints.join(', '))}. Compare the exact artwork and finish before using a price.</p>` : ''}
     </div>`;
@@ -4122,6 +4129,7 @@
         // The cached rows came from the old source; force a full refetch.
         try { localStorage.removeItem(KEY.cards); } catch (_) {}
         await fetchCards(true);
+        runKeyMigration();
         invalidate(); renderDataSource(); renderSettings(); renderActive();
         // The boot banner is stale the moment data arrives.
         $('#boot-error').classList.add('hidden');
@@ -4153,7 +4161,7 @@
     on('#refresh-data', 'click', async () => {
       const btn = $('#refresh-data');
       btn.disabled = true; btn.textContent = 'Refreshing…';
-      try { await fetchCards(true); invalidate(); renderSettings(); renderActive(); }
+      try { await fetchCards(true); runKeyMigration(); invalidate(); renderSettings(); renderActive(); }
       catch (err) { alert('Refresh failed: ' + err.message); }
       btn.disabled = false; btn.textContent = 'Refresh prices';
     });
@@ -4172,8 +4180,7 @@
 
      The original row ID keeps the holding and its other details intact. */
   function runKeyMigration() {
-    const v1 = S.items.filter(it => C.isV1Key(it.key));
-    if (!v1.length) return;
+    if (!S.cards.length || !S.items.some(it => !it.deleted && C.isV1Key(it.key))) return;
 
     const res = C.migrateKeys(S.items, S.cards);
     S.items = res.items;
@@ -4271,7 +4278,7 @@
       const r = await fetchCards(false);
       if (r.fromCache) {
         // Cache is warm — show it instantly, then quietly freshen in the background.
-        refreshCachedCards().then(() => { invalidate(); renderActive(); }).catch(() => {});
+        refreshCachedCards().then(() => { runKeyMigration(); invalidate(); renderActive(); }).catch(() => {});
       }
       if (collapsePermanent('boot')) persistCollection();
       runKeyMigration();

@@ -80,16 +80,42 @@ const OQ_COLLECTION = (function (D, E) {
   /** "OP16-011_l76oKss" -> "OP16-011". Also tolerates a bare number. */
   const numberFrom = imageId => String(imageId || '').split('_')[0].toUpperCase();
 
+  const numberedCard = /\b(?:OP|ST|EB|PRB)\d{2}-\d{3}\b|\bP-\d{3}\b/i;
+  const nameKey = name => String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+  function cardTitle(name, number) {
+    const title = String(name || '').trim();
+    const code = String(number || '').match(numberedCard)?.[0];
+    if (!code || code !== number) return title;
+    const serial = code.slice(-3);
+    const cleaned = title
+      .replace(new RegExp(`\\s*[-–—]\\s*${code}(?=\\s|$)`, 'gi'), '')
+      .replace(new RegExp(`\\s*\\((?:${code}|${serial})\\)`, 'gi'), '')
+      .trim();
+    return cleaned || title;
+  }
+
+  function legacyIdentity(key) {
+    const parts = splitV1Key(key);
+    if (!parts) return null;
+    const number = parts.imageId.replace(/_/g, ' ').match(numberedCard)?.[0].toUpperCase() ||
+      parts.name.match(numberedCard)?.[0].toUpperCase() || '';
+    return { ...parts, rawName: parts.name, name: cardTitle(parts.name, number), number,
+      don: /^don!!(?:\s|$)/i.test(parts.name) };
+  }
+
   function buildMatchIndex(cards) {
-    const byNameNum = {};
+    const index = new Map();
     for (const c of cards) {
-      const nm = String(c.card_name || '').toLowerCase().trim();
       const num = String(c.card_set_id || '').toUpperCase().trim();
-      if (!nm || !num) continue;
-      const k = nm + '|' + num;
-      (byNameNum[k] = byNameNum[k] || []).push(c);
+      const don = c.card_type === 'DON!!' || c.rarity === 'DON';
+      const name = nameKey(cardTitle(c.card_name, num));
+      if (!name || (!num && !don)) continue;
+      const key = name + '|' + (don ? 'DON' : num);
+      if (!index.has(key)) index.set(key, []);
+      index.get(key).push(c);
     }
-    return byNameNum;
+    return index;
   }
 
   /**
@@ -108,10 +134,15 @@ const OQ_COLLECTION = (function (D, E) {
     for (const it of items || []) {
       if (!isV1Key(it.key)) { alreadyV2++; out.push(it); continue; }
 
-      const parts = splitV1Key(it.key);
+      const parts = legacyIdentity(it.key);
       if (!parts) { unmatched.push(it); out.push(it); continue; }
 
-      const hits = idx[parts.name.toLowerCase().trim() + '|' + numberFrom(parts.imageId)] || [];
+      const candidates = idx.get(nameKey(parts.name) + '|' + (parts.don ? 'DON' : parts.number)) || [];
+      const exactName = nameKey(parts.rawName);
+      const exact = candidates.filter(card => nameKey(card.card_name) === exactName);
+      const matches = exact.length ? exact : candidates;
+      const sameSet = matches.filter(card => card.set_id === parts.setId);
+      const hits = sameSet.length ? sameSet : matches;
 
       if (hits.length === 1) {
         // oldKey is kept so the migration is auditable and reversible, and so
@@ -566,7 +597,7 @@ const OQ_COLLECTION = (function (D, E) {
   return {
     uid, newCollection, newItem, newOpen, isGraded, rateOf,
     mergeRows, live, livePlaced, orphans, qtyOf, amount, unitValue, valueOf, holdingHistory, group, scoreboard,
-    migrateKeys, isV1Key, splitV1Key, numberFrom,
+    migrateKeys, isV1Key, splitV1Key, numberFrom, legacyIdentity, cardTitle,
     dedupePermanent, newPermanent, PERMANENT_ID, isPermanent,
     validUrl, diagnose, pull, push
   };

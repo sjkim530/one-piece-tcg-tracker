@@ -41,7 +41,7 @@
 <link rel="apple-touch-icon" href="icons/vault-192.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/vault-192.png">
 
-<link rel="stylesheet" href="styles.css?v=3.7.1">
+<link rel="stylesheet" href="styles.css?v=3.7.2">
 </head>
 <body>
 
@@ -205,9 +205,9 @@
         <p class="small muted" id="watch-printing"></p>
         <form id="watch-form">
           <div class="watch-fields">
-            <label class="fld"><span>Maximum buy listing ($)</span><input name="buy" type="number" min="0.01" max="1000000" step="0.01"></label>
-            <label class="fld"><span>Minimum sell proceeds ($)</span><input name="sell" type="number" min="0.01" max="1000000" step="0.01"></label>
-            <label class="fld"><span>Seller shipping cost ($)</span><input name="shipping" type="number" min="0" max="1000000" step="0.01"></label>
+            <label class="fld"><span>Buy max ($)</span><input name="buy" type="number" min="0.01" max="1000000" step="0.01"></label>
+            <label class="fld"><span>Sell net min ($)</span><input name="sell" type="number" min="0.01" max="1000000" step="0.01"></label>
+            <label class="fld"><span>Shipping ($)</span><input name="shipping" type="number" min="0" max="1000000" step="0.01"></label>
           </div>
           <p class="small muted">Buy targets use the lowest listing before shipping and tax. Sell targets estimate proceeds at Market Price after TCGplayer fees and your shipping cost.</p>
           <button class="btn small" type="submit">Save targets</button>
@@ -316,9 +316,9 @@
 
     <!-- ================================================== COLLECTION ==== -->
     <section class="view collection-view hidden" id="view-collection" role="tabpanel" data-view="collection" aria-labelledby="tab-collection">
-      <div class="catalog-head">
+      <div class="catalog-head collection-heading">
         <h1 id="collection-title">My Collection</h1>
-        <button class="btn primary" type="button" id="col-search-catalog">Find cards to add</button>
+        <button class="btn primary" type="button" id="col-search-catalog">Find cards</button>
       </div>
       <div id="mig-report"></div>
       <div id="stranded-report"></div>
@@ -350,11 +350,11 @@
             <p class="small muted" id="col-price-source"></p>
             <div class="collection-tools">
               <input id="col-query" type="search" aria-label="Search this binder" placeholder="Search this binder" autocomplete="off">
-              <label>Sort <select id="col-sort">
+              <select id="col-sort" aria-label="Sort binder holdings">
                 <option value="value">Total value</option>
                 <option value="name">Card name</option>
                 <option value="qty">Quantity</option>
-              </select></label>
+              </select>
               <button class="btn small" id="col-sell" type="button" aria-pressed="false">Review for sale</button>
               <span class="small muted" id="col-signal-status" role="status"></span>
             </div>
@@ -644,12 +644,12 @@ if ('serviceWorker' in navigator) {
 </script>
 <script src="data.js?v=2.13.0"></script>
 <script src="engine.js?v=2.13.0"></script>
-<script src="collection.js?v=3.4.0"></script>
+<script src="collection.js?v=3.7.2"></script>
 <script src="source.js?v=3.5.1"></script>
-<script src="price-history.js?v=3.0.0"></script>
+<script src="price-history.js?v=3.7.2"></script>
 <script src="market-analysis.js?v=3.7.0"></script>
 <script src="card-scan.js?v=3.6.1"></script>
 <script src="backup.js?v=3.5.0"></script>
-<script src="app.js?v=3.7.1"></script>
+<script src="app.js?v=3.7.2"></script>
 </body>
 </html>

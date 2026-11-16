@@ -353,6 +353,8 @@ const OQ_HISTORY = (() => {
       let points = [];
       let geometry;
       let selectedIndex = -1;
+      let pinnedIndex = -1;
+      const prompt = 'Tap, click, or use arrow keys to inspect a day.';
       const redraw = () => { geometry = draw(canvas, points, points[selectedIndex]?.[0]); };
       function select(index) {
         if (selectedIndex === index) return;
@@ -361,14 +363,14 @@ const OQ_HISTORY = (() => {
         pointLabel.textContent = quote
           ? dateLabel(quote[0]) + ' · ' + options.label + ' ' + dollars(quote[1]) +
             (quote[2] == null ? '' : ' · Lowest listing ' + dollars(quote[2]))
-          : 'Hover or use the arrow keys to inspect a day.';
+          : prompt;
         redraw();
       }
       function render() {
-        selectedIndex = -1;
+        selectedIndex = pinnedIndex = -1;
         points = selectRange(result.series[Number(printing.value)].points, range.value);
         canvas.hidden = dates.hidden = stats.hidden = pointLabel.hidden = !points.length;
-        pointLabel.textContent = 'Hover or use the arrow keys to inspect a day.';
+        pointLabel.textContent = prompt;
         const notes = [];
         if (result.archiveUnavailable) notes.push('Some archived prices could not load.');
         if (result.storageUnavailable) notes.push('Browser snapshots are unavailable.');
@@ -396,23 +398,29 @@ const OQ_HISTORY = (() => {
         canvas.setAttribute('aria-label', options.label + ' from ' + span + '. ' + stats.textContent);
         redraw();
       }
-      canvas.addEventListener('pointermove', event => {
-        if (!geometry || !points.length) return;
+      function nearestDay(clientX) {
         const { left, right } = geometry;
+        const x = clientX - canvas.getBoundingClientRect().left;
         const first = points[0][0];
         const last = points.at(-1)[0];
-        const day = first + (last - first) * (event.offsetX - left) / Math.max(1, right - left);
-        const nearest = points.reduce((best, point, index) =>
+        const day = first + (last - first) * (x - left) / Math.max(1, right - left);
+        return points.reduce((best, point, index) =>
           Math.abs(point[0] - day) < Math.abs(points[best][0] - day) ? index : best, 0);
-        select(nearest);
+      }
+      canvas.addEventListener('pointermove', event => {
+        if (event.pointerType === 'mouse' && geometry && points.length) select(nearestDay(event.clientX));
       });
-      canvas.addEventListener('pointerleave', () => select(-1));
+      canvas.addEventListener('click', event => {
+        if (geometry && points.length) select(pinnedIndex = nearestDay(event.clientX));
+      });
+      canvas.addEventListener('pointerleave', () => select(pinnedIndex));
       canvas.addEventListener('keydown', event => {
         const direction = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
         if (!direction || !points.length) return;
         event.preventDefault();
-        select(selectedIndex === -1 ? points.length - 1 :
-          Math.max(0, Math.min(points.length - 1, selectedIndex + direction)));
+        pinnedIndex = selectedIndex === -1 ? points.length - 1 :
+          Math.max(0, Math.min(points.length - 1, selectedIndex + direction));
+        select(pinnedIndex);
       });
       range.addEventListener('change', render);
       function selectPrinting() {

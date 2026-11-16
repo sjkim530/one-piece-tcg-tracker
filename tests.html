@@ -835,6 +835,26 @@
     eq(sb.rows.length, 0);
   });
 
+  describe('legacy collection entries');
+  it('links embedded numbers and distinct DON!! printings while preserving holding data', () => {
+    const items = [
+      { id: 'perona', key: 'EB-03|EB03_OP09-034_p1|Perona - OP09-034', qty: 2, paid: 3, note: 'keep' },
+      { id: 'double', key: 'OP-16|don_187|DON!! Card (Double Pack Set Vol. 11) (Luffy and Ace)', qty: 1 },
+      { id: 'gold', key: 'OP14-EB04|don_9|DON!! Card (Dracule Mihawk) (Gold)', qty: 1 }
+    ];
+    const cards = [
+      { id: 675747, card_name: 'Perona - OP09-034', card_set_id: 'OP09-034', set_id: 'EB-03' },
+      { id: 596960, card_name: 'Perona', card_set_id: 'OP09-034', set_id: 'OP-09' },
+      { id: 698315, card_name: 'DON!! Card (Double Pack Set Vol. 11) (Luffy and Ace)', rarity: 'DON' },
+      { id: 672186, card_name: 'DON!! Card (Dracule Mihawk) (Gold)', rarity: 'DON' },
+      { id: 672185, card_name: 'DON!! Card (Dracule Mihawk)', rarity: 'DON' }
+    ];
+    const moved = C.migrateKeys(items, cards).items;
+    eq(moved.map(item => item.key), ['675747', '698315', '672186']);
+    eq([moved[0].qty, moved[0].paid, moved[0].note, moved[0].oldKey], [2, 3, 'keep', items[0].key]);
+    eq(C.cardTitle('Roronoa Zoro - PRB02-006 (SP)', 'PRB02-006'), 'Roronoa Zoro (SP)');
+  });
+
   describe('market verdict evidence');
   it('uses a recent two-week trend for a limited Hold without lowering buy and sell requirements', () => {
     const points = Array.from({ length: 18 }, (_, day) => [day, day < 8 ? 1000 : 1300, 1200]);
