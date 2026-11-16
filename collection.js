@@ -82,6 +82,10 @@ const OQ_COLLECTION = (function (D, E) {
 
   const numberedCard = /\b(?:OP|ST|EB|PRB)\d{2}-\d{3}\b|\bP-\d{3}\b/i;
   const nameKey = name => String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  // The price provider later added "(Dash Pack)" to this EB-03 printing's name.
+  const peronaDashPackKey = 'EB-03|EB03_OP09-034_p1|Perona - OP09-034';
+  const needsKeyMigration = item => isV1Key(item.key) ||
+    (item.oldKey === peronaDashPackKey && String(item.key) === '596960');
 
   function cardTitle(name, number) {
     const title = String(name || '').trim();
@@ -127,36 +131,42 @@ const OQ_COLLECTION = (function (D, E) {
    */
   function migrateKeys(items, cards) {
     const idx = buildMatchIndex(cards);
+    const dashPack = cards.find(card => String(card.id) === '675747' &&
+      card.set_id === 'EB-03' && card.card_set_id === 'OP09-034');
     const out = [];
     const unmatched = [], ambiguous = [];
     let migrated = 0, alreadyV2 = 0;
 
     for (const it of items || []) {
-      if (!isV1Key(it.key)) { alreadyV2++; out.push(it); continue; }
-
-      const parts = legacyIdentity(it.key);
+      if (!needsKeyMigration(it)) { alreadyV2++; out.push(it); continue; }
+      const legacyKey = isV1Key(it.key) ? it.key : it.oldKey;
+      const parts = legacyIdentity(legacyKey);
       if (!parts) { unmatched.push(it); out.push(it); continue; }
 
       const candidates = idx.get(nameKey(parts.name) + '|' + (parts.don ? 'DON' : parts.number)) || [];
+      const sameSet = candidates.filter(card => card.set_id === parts.setId);
+      const pool = legacyKey === peronaDashPackKey ? (dashPack ? [dashPack] : []) :
+        parts.don && !sameSet.length ? candidates : sameSet;
       const exactName = nameKey(parts.rawName);
-      const exact = candidates.filter(card => nameKey(card.card_name) === exactName);
-      const matches = exact.length ? exact : candidates;
-      const sameSet = matches.filter(card => card.set_id === parts.setId);
-      const hits = sameSet.length ? sameSet : matches;
+      const exact = pool.filter(card => nameKey(card.card_name) === exactName);
+      const hits = exact.length ? exact : pool;
 
       if (hits.length === 1) {
         // oldKey is kept so the migration is auditable and reversible, and so
         // a row that later turns out to be mismatched can be traced back.
         out.push(Object.assign({}, it, {
-          key: String(hits[0].id), oldKey: it.key, updatedAt: Date.now()
+          key: String(hits[0].id), oldKey: legacyKey, updatedAt: Date.now()
         }));
         migrated++;
       } else if (hits.length > 1) {
         ambiguous.push({ item: it, candidates: hits.map(c => c.id) });
         out.push(it);
       } else {
-        unmatched.push(it);
-        out.push(it);
+        // 3.7.2 could link Perona to the base printing. Restore its original key if the Dash Pack is unavailable.
+        const row = it.key === legacyKey ? it : { ...it, key: legacyKey, updatedAt: Date.now() };
+        if (row !== it) migrated++;
+        unmatched.push(row);
+        out.push(row);
       }
     }
     return { items: out, migrated, unmatched, ambiguous, alreadyV2 };
@@ -597,7 +607,7 @@ const OQ_COLLECTION = (function (D, E) {
   return {
     uid, newCollection, newItem, newOpen, isGraded, rateOf,
     mergeRows, live, livePlaced, orphans, qtyOf, amount, unitValue, valueOf, holdingHistory, group, scoreboard,
-    migrateKeys, isV1Key, splitV1Key, numberFrom, legacyIdentity, cardTitle,
+    migrateKeys, needsKeyMigration, isV1Key, splitV1Key, numberFrom, legacyIdentity, cardTitle,
     dedupePermanent, newPermanent, PERMANENT_ID, isPermanent,
     validUrl, diagnose, pull, push
   };

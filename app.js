@@ -4180,7 +4180,7 @@
 
      The original row ID keeps the holding and its other details intact. */
   function runKeyMigration() {
-    if (!S.cards.length || !S.items.some(it => !it.deleted && C.isV1Key(it.key))) return;
+    if (!S.cards.length || !S.items.some(it => !it.deleted && C.needsKeyMigration(it))) return;
 
     const res = C.migrateKeys(S.items, S.cards);
     S.items = res.items;

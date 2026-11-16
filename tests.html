@@ -843,7 +843,7 @@
       { id: 'gold', key: 'OP14-EB04|don_9|DON!! Card (Dracule Mihawk) (Gold)', qty: 1 }
     ];
     const cards = [
-      { id: 675747, card_name: 'Perona - OP09-034', card_set_id: 'OP09-034', set_id: 'EB-03' },
+      { id: 675747, card_name: 'Perona - OP09-034 (Dash Pack)', card_set_id: 'OP09-034', set_id: 'EB-03' },
       { id: 596960, card_name: 'Perona', card_set_id: 'OP09-034', set_id: 'OP-09' },
       { id: 698315, card_name: 'DON!! Card (Double Pack Set Vol. 11) (Luffy and Ace)', rarity: 'DON' },
       { id: 672186, card_name: 'DON!! Card (Dracule Mihawk) (Gold)', rarity: 'DON' },
@@ -853,6 +853,10 @@
     eq(moved.map(item => item.key), ['675747', '698315', '672186']);
     eq([moved[0].qty, moved[0].paid, moved[0].note, moved[0].oldKey], [2, 3, 'keep', items[0].key]);
     eq(C.cardTitle('Roronoa Zoro - PRB02-006 (SP)', 'PRB02-006'), 'Roronoa Zoro (SP)');
+    const mislinked = { ...items[0], key: '596960', oldKey: items[0].key };
+    eq(C.migrateKeys([mislinked], cards).items[0].key, '675747');
+    eq(C.migrateKeys([mislinked], [cards[1]]).items[0].key, items[0].key);
+    eq(C.migrateKeys([items[0]], [cards[1]]).items[0].key, items[0].key);
   });
 
   describe('market verdict evidence');
