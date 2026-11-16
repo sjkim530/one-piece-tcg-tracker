@@ -3321,9 +3321,9 @@
     const distinct = values => [...new Set(values.filter(Boolean))].sort().map(value => [value, value]);
     const rows = S.catalogIndex;
     catalogOptions($('#catalog-set'), [['', 'All sets'], ...sets.map(set => [set.id, set.short + ' · ' + set.name])]);
-    catalogOptions($('#catalog-rarity'), [['', 'All rarities and variants'], ...distinct(rows.map(row => row.badge.label))]);
-    catalogOptions($('#catalog-type'), [['', 'All card types'], ...distinct(rows.map(row => row.card.card_type))]);
-    catalogOptions($('#catalog-color'), [['', 'All colours'], ...distinct(['Red', 'Green', 'Blue', 'Purple', 'Black', 'Yellow'])]);
+    catalogOptions($('#catalog-rarity'), [['', 'All rarities'], ...distinct(rows.map(row => row.badge.label))]);
+    catalogOptions($('#catalog-type'), [['', 'All types'], ...distinct(rows.map(row => row.card.card_type))]);
+    catalogOptions($('#catalog-color'), [['', 'All colors'], ...distinct(['Red', 'Green', 'Blue', 'Purple', 'Black', 'Yellow'])]);
     $('#catalog-date').textContent = catalogDate();
     $('#featured-cards').innerHTML = featuredPrintings.map(key => {
       const card = S.byKey[key];
@@ -3370,6 +3370,7 @@
     });
     const count = [set, rarity, type, color].filter(Boolean).length;
     $('#catalog-filter-count').textContent = count ? '(' + count + ')' : '';
+    $('#catalog-clear').hidden = count === 0;
     $('#catalog-count').textContent = matches.length
       ? `${Math.min(catalogLimit, matches.length).toLocaleString()} of ${matches.length.toLocaleString()} printings`
       : 'No matching cards';
@@ -3799,6 +3800,7 @@
     on('#catalog-clear', 'click', () => {
       for (const filter of catalogFilters) $('#catalog-' + filter).value = '';
       reset();
+      $('#catalog-set').focus({ preventScroll: true });
     });
     on('#catalog-more', 'click', () => {
       catalogLimit += CATALOG_PAGE;
@@ -3924,7 +3926,30 @@
     return el;
   }
 
+  function wireSelectLabels() {
+    if (!CSS.supports('appearance', 'base-select') || !CSS.supports('selector(::picker(select))')) return;
+    function addLabel(select) {
+      if (select.multiple || select.size > 1 || select.firstElementChild?.matches('button')) return;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.append(document.createElement('selectedcontent'));
+      select.prepend(button);
+    }
+    $$('select').forEach(addLabel);
+    // Several views replace their options or render new selects after a data refresh.
+    new MutationObserver(records => {
+      for (const { target, addedNodes } of records) {
+        if (target instanceof HTMLSelectElement) addLabel(target);
+        else for (const node of addedNodes) {
+          if (node instanceof HTMLSelectElement) addLabel(node);
+          else if (node instanceof HTMLElement) $$('select', node).forEach(addLabel);
+        }
+      }
+    }).observe($('#app'), { childList: true, subtree: true });
+  }
+
   function wire() {
+    wireSelectLabels();
     wireBackup();
     const tabs = $$('#tabs button');
     tabs.forEach(button => button.addEventListener('click', () => switchTab(button.dataset.tab)));

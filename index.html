@@ -41,7 +41,7 @@
 <link rel="apple-touch-icon" href="icons/vault-192.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/vault-192.png">
 
-<link rel="stylesheet" href="styles.css?v=3.7.0">
+<link rel="stylesheet" href="styles.css?v=3.7.1">
 </head>
 <body>
 
@@ -100,11 +100,13 @@
       <div class="catalog-banner">
         <div class="catalog-intro">
           <h1 id="catalog-title">Explore the<br><em>card catalog.</em></h1>
-          <label class="catalog-search">
-            <span class="visually-hidden">Search by name or card number</span>
-            <input id="catalog-query" type="search" placeholder="Try Shanks, OP01-120, or Blocker" autocomplete="off" spellcheck="false">
-          </label>
-          <button class="btn scan-launch" id="scan-open" type="button">Scan Card</button>
+          <div class="catalog-search-actions">
+            <label class="catalog-search">
+              <span class="visually-hidden">Search by name, number, or card text</span>
+              <input id="catalog-query" type="search" placeholder="Name or number" autocomplete="off" spellcheck="false">
+            </label>
+            <button class="btn scan-launch" id="scan-open" type="button">Scan Card</button>
+          </div>
         </div>
         <div class="featured-cards" id="featured-cards" aria-label="Featured cards"></div>
       </div>
@@ -116,18 +118,18 @@
           <label class="fld"><span>Rarity / variant</span><select id="catalog-rarity"></select></label>
           <label class="fld"><span>Card type</span><select id="catalog-type"></select></label>
           <label class="fld"><span>Color</span><select id="catalog-color"></select></label>
-          <button class="btn" id="catalog-clear" type="button">Clear filters</button>
+          <button class="btn" id="catalog-clear" type="button" hidden>Clear filters</button>
         </div>
       </details>
       <div class="catalog-results">
       <div class="catalog-toolbar">
         <div><h2 id="catalog-results-title">Browse cards</h2><p id="catalog-count" role="status"></p></div>
-        <label>Sort <select id="catalog-sort">
+        <select id="catalog-sort" aria-label="Sort cards">
           <option value="match">Best match</option>
-          <option value="price-high">Price: high to low</option>
-          <option value="price-low">Price: low to high</option>
+          <option value="price-high">Highest price</option>
+          <option value="price-low">Lowest price</option>
           <option value="name">Card name</option>
-        </select></label>
+        </select>
       </div>
       <div class="small muted catalog-freshness" id="catalog-date"></div>
       <div class="catalog-grid" id="catalog-grid" aria-labelledby="catalog-results-title"></div>
@@ -648,6 +650,6 @@ if ('serviceWorker' in navigator) {
 <script src="market-analysis.js?v=3.7.0"></script>
 <script src="card-scan.js?v=3.6.1"></script>
 <script src="backup.js?v=3.5.0"></script>
-<script src="app.js?v=3.7.0"></script>
+<script src="app.js?v=3.7.1"></script>
 </body>
 </html>
