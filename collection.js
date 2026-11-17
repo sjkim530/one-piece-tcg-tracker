@@ -67,6 +67,7 @@ const OQ_COLLECTION = (function (D, E) {
   const isV1Key = key => typeof key === 'string' && key.indexOf('|') > -1;
 
   function splitV1Key(key) {
+    if (!isV1Key(key)) return null;
     const a = key.indexOf('|');
     const b = key.indexOf('|', a + 1);
     if (a < 0 || b < 0) return null;

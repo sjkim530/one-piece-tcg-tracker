@@ -836,6 +836,12 @@
   });
 
   describe('legacy collection entries');
+  it('ignores current product IDs in both numeric and text form when parsing legacy titles', () => {
+    for (const key of [685194, '685194', null, undefined]) {
+      eq(C.legacyIdentity(key), null);
+    }
+    eq(C.legacyIdentity('EB-03|EB03_OP09-034_p1|Perona - OP09-034').number, 'OP09-034');
+  });
   it('links embedded numbers and distinct DON!! printings while preserving holding data', () => {
     const items = [
       { id: 'perona', key: 'EB-03|EB03_OP09-034_p1|Perona - OP09-034', qty: 2, paid: 3, note: 'keep' },

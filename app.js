@@ -2571,7 +2571,7 @@
     const sellOnly = $('#col-sell').getAttribute('aria-pressed') === 'true';
     const rows = items.filter(item => !sellOnly || isSellNow(item)).map(it => {
       const card = S.byKey[it.key];
-      const legacy = C.legacyIdentity(it.key);
+      const legacy = card ? null : C.legacyIdentity(it.key);
       const number = card?.card_type === 'DON!!' ? 'DON!!' : card?.card_set_id || legacy?.number || (legacy?.don ? 'DON!!' : '');
       const title = card ? C.cardTitle(card.card_name, number) : legacy?.name || 'Unlinked card';
       return { it, card, title, number, qty: C.qtyOf(it), each: C.unitValue(it, priceForKey) };
@@ -2686,7 +2686,7 @@
       : sellOnly && !collectionHistoryRun?.signals ? 'Checking market signals…' : 'No cards match these filters.'}</td></tr>`;
     renderCollectionSignals(items);
 
-    const find = id => S.items.find(x => x.id === id);
+    const find = id => S.items.find(x => String(x.id) === id);
     const touch = it => { it.updatedAt = Date.now(); persistCollection(); renderCollection(); };
 
     /**
