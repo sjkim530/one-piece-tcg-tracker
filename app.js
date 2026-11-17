@@ -1300,7 +1300,7 @@
     if (!qty) return null;
     const names = [];
     for (const it of mine) {
-      const col = S.cols.find(c => c.id === it.colId);
+      const col = S.cols.find(c => sameBinder(c.id, it.colId));
       const n = col ? col.name : 'a binder';
       if (names.indexOf(n) === -1) names.push(n);
     }
@@ -2107,12 +2107,14 @@
   }
 
   const liveCols = () => S.cols.filter(c => !c.deleted);
-  const itemsIn  = id => C.live(S.items).filter(it => it.colId === id);
+  // Older backups can use numeric binder IDs. HTML control values are strings.
+  const sameBinder = (first, second) => first != null && second != null && String(first) === String(second);
+  const itemsIn = id => C.live(S.items).filter(it => sameBinder(it.colId, id));
 
   function currentCol() {
     const cols = liveCols();
     if (!cols.length) return null;
-    let c = cols.find(x => x.id === S.curCol);
+    let c = cols.find(x => sameBinder(x.id, S.curCol));
     if (!c) { c = cols.find(col => col.kind === 'keep') || cols[0]; S.curCol = c.id; }
     return c;
   }
@@ -2375,7 +2377,7 @@
       const v = C.valueOf(itemsIn(c.id), priceForKey);
       const rate = C.rateOf(c);
       const isTrade = c.kind === 'trade';
-      return `<button class="binder" data-col="${esc(c.id)}" aria-selected="${c.id === S.curCol}">
+      return `<button type="button" class="binder" data-col="${esc(c.id)}" aria-pressed="${sameBinder(c.id, S.curCol)}" aria-controls="binder-holdings">
         <span class="bn"><b>${esc(c.name)}${c.locked
             ? '<span class="lockicon" title="Permanent binder">🔒</span>' : ''}</b>
           <span>${(D.COLLECTION_KINDS[c.kind] || {}).label || c.kind} · ${v.cards} cards${
@@ -2422,9 +2424,6 @@
       });
     }
 
-    $$('#col-list .binder').forEach(b => b.addEventListener('click', () => {
-      S.curCol = b.dataset.col; renderCollection();
-    }));
     const del = $('#col-del');
     if (del) del.addEventListener('click', () => {
       const col = currentCol();
@@ -2486,7 +2485,7 @@
 
     const here = {}, elsewhere = {};
     for (const it of C.live(S.items)) {
-      if (it.colId === col?.id) {
+      if (sameBinder(it.colId, col?.id)) {
         if (isQuickAddItem(it)) here[it.key] = (here[it.key] || 0) + 1;
       } else elsewhere[it.key] = true;
     }
@@ -2519,7 +2518,7 @@
     const col = currentCol();
     if (!col) return;
     const hit = C.live(S.items).find(it =>
-      it.colId === col.id && String(it.key) === key && isQuickAddItem(it));
+      sameBinder(it.colId, col.id) && String(it.key) === key && isQuickAddItem(it));
 
     if (hit) { hit.deleted = 1; hit.updatedAt = Date.now(); }
     else {
@@ -2592,7 +2591,7 @@
     // routine, and the delete-and-re-add workaround destroyed seven fields —
     // including cost basis and the pulled/bought flag, which would have
     // recounted a bought card as a pull and inflated the rip scoreboard.
-    const others = liveCols().filter(c => c.id !== col.id);
+    const others = liveCols().filter(c => !sameBinder(c.id, col.id));
 
     const rate = C.rateOf(col);
     const traded = col.kind === 'trade' && rate !== 100;
@@ -2745,12 +2744,12 @@
     }));
     $$('.it-move').forEach(el => el.addEventListener('change', () => {
       const it = find(el.dataset.id);
-      const dest = el.value;
+      const dest = liveCols().find(col => sameBinder(col.id, el.value));
       if (!it || !dest) return;
 
       // Preserve distinct purchase lots, valuations and notes.
       const twin = C.live(S.items).find(x =>
-        x.id !== it.id && x.colId === dest && String(x.key) === String(it.key) &&
+        x.id !== it.id && sameBinder(x.colId, dest.id) && String(x.key) === String(it.key) &&
         holdingPrinting(it) != null && holdingPrinting(x) === holdingPrinting(it) &&
         x.cond === it.cond && x.grader === it.grader &&
         String(x.grade) === String(it.grade) && x.src === it.src &&
@@ -2763,7 +2762,7 @@
         it.deleted = 1;
         it.updatedAt = Date.now();
       } else {
-        it.colId = dest;
+        it.colId = dest.id;
         it.updatedAt = Date.now();
       }
       persistCollection();
@@ -3301,7 +3300,7 @@
   function catalogOptions(select, options) {
     const value = select.value;
     select.replaceChildren(...options.map(([id, label]) => new Option(label, id)));
-    if (options.some(([id]) => id === value)) select.value = value;
+    if (options.some(([id]) => String(id) === value)) select.value = value;
   }
 
   function renderCatalog() {
@@ -3579,7 +3578,7 @@
     const label = printing || 'Finish unavailable';
     const binder = $('#catalog-binder').value;
     $('#catalog-add button[type="submit"]').disabled = !binder || printing == null;
-    const count = C.live(S.items).filter(item => item.colId === binder && String(item.key) === catalogCardKey &&
+    const count = itemsIn(binder).filter(item => String(item.key) === catalogCardKey &&
         holdingPrinting(item, card) === printing)
       .reduce((total, item) => total + Number(item.qty || 0), 0);
     $('#catalog-ownership').textContent = message || (count
@@ -3831,7 +3830,7 @@
     });
     on('#catalog-add', 'submit', event => {
       event.preventDefault();
-      const binder = C.live(S.cols).find(col => col.id === $('#catalog-binder').value);
+      const binder = liveCols().find(col => sameBinder(col.id, $('#catalog-binder').value));
       const qty = $('#catalog-quantity').valueAsNumber;
       const card = S.byKey[catalogCardKey];
       const printing = catalogPrinting ?? card?.printing;
@@ -4034,6 +4033,25 @@
       }, 180);
     });
     // ---- collection
+    on('#col-list', 'click', event => {
+      const button = event.target.closest('button[data-col]');
+      if (!button) return;
+      const binder = liveCols().find(col => sameBinder(col.id, button.dataset.col));
+      if (!binder) return;
+      if (!sameBinder(S.curCol, binder.id)) {
+        S.curCol = binder.id;
+        $('#col-query').value = '';
+        $('#col-sell').setAttribute('aria-pressed', 'false');
+        renderCollection();
+      }
+      if (MOBILE()) {
+        const heading = $('#col-title');
+        heading.focus({ preventScroll: true });
+        heading.scrollIntoView({ block: 'start' });
+      } else {
+        $('#col-list .binder[aria-pressed="true"]')?.focus({ preventScroll: true });
+      }
+    });
     on('#col-search-catalog', 'click', () => {
       switchTab('catalog');
       $('#catalog-query').focus({ preventScroll: true });

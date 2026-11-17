@@ -521,7 +521,8 @@ button.btn:disabled { opacity: .45; cursor: not-allowed; }
   border-radius: var(--r-s); color: var(--ink); transition: .14s;
 }
 .binder:hover { border-color: var(--sea); }
-.binder[aria-selected="true"] { border-color: var(--brass); background: var(--panel-2); }
+.binder[aria-pressed="true"] { border-color: var(--sea); background: var(--panel-2); }
+#col-title:focus { outline-offset: 3px; }
 .binder .bn { flex: 1; min-width: 0; }
 .binder .bn > b { display: block; font-size: 13.5px; }
 /* Direct child only. This used to be `.bn span`, which also caught the lock
@@ -1252,6 +1253,7 @@ button.binder-art { cursor: pointer; }
 .holding-finish { color: var(--ink-3); font-size: 12px; }
 #col-tbl .it-src, #col-tbl .it-move { min-width: 83px; }
 .binder, .scanner-card { background: var(--panel); }
+.binder[aria-pressed="true"] { background: #edf3fe; }
 #sig-results { grid-template-columns: minmax(0, 1fr); }
 .signal-row {
   grid-template-columns: 49px minmax(125px, 1.1fr) minmax(100px, .65fr) minmax(0, 1.7fr);

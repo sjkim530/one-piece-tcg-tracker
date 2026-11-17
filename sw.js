@@ -1,6 +1,6 @@
 /* Cache the exact app shell for offline use. Data uses HTTP revalidation. */
 const CACHE_PREFIX = 'optcg-quant-';
-const CACHE = CACHE_PREFIX + 'v26';
+const CACHE = CACHE_PREFIX + 'v27';
 const scope = new URL(self.registration.scope);
 const indexUrl = new URL('index.html', scope).href;
 const unavailable = () => new Response('This resource is unavailable offline.', {
