@@ -344,7 +344,7 @@
 
      Four fields are removed on the way in:
        card_image (485 KB)  derivable from id — it IS the id in a fixed URL
-       set_name   (257 KB)  derivable from set_id via D.SETS
+       set_name             only when exactly derivable from D.SETS
        direct_low (133 KB)  null on every single card; TCGplayer never fills it
        high_price (112 KB)  polluted with $9,999 placeholder listings and
                             deliberately never displayed
@@ -352,10 +352,13 @@
      Everything still needed is rebuilt on read, so the rest of the app never
      learns this happened. */
   const IMG_BASE = 'https://tcgplayer-cdn.tcgplayer.com/product/';
+  const CATALOG_SCHEMA = 4;
 
   function slimCard(c) {
     const o = Object.assign({}, c);
-    delete o.card_image; delete o.set_name;
+    delete o.card_image;
+    const set = D.SETS.find(s => s.id === c.set_id);
+    if (set && set.name === c.set_name) delete o.set_name;
     delete o.high_price; delete o.direct_low_price;
     // Only drop the image when it is exactly what we can rebuild.
     if (c.card_image !== IMG_BASE + c.id + '_400w.jpg') o.card_image = c.card_image;
@@ -365,39 +368,58 @@
   function fatCard(c) {
     if (c.card_image == null) c.card_image = IMG_BASE + c.id + '_400w.jpg';
     if (c.set_name == null) {
-      const m = setMeta(c.set_id);
+      const m = D.SETS.find(s => s.id === c.set_id);
       c.set_name = m ? m.name : c.set_id;
     }
     return c;
   }
 
+  function cachedCatalog() {
+    const cached = load(KEY.cards, null);
+    // Schemas 2 and 3 have usable card identities, but need an online rebuild
+    // for current set classification and names. Never borrow another source.
+    return cached && Array.isArray(cached.rows) && cached.rows.length &&
+      cached.feed?.source === SRC.base() && [2, 3, CATALOG_SCHEMA].includes(cached.feed.schema)
+      ? cached : null;
+  }
+
+  function useCachedCards(cached, stale) {
+    const cards = cached.rows.map(c => fatCard({ ...c }));
+    const products = cached.products || [];
+    const feed = { ...cached.feed, stale: !!stale };
+    applyCards(cards, cached.at, products, feed);
+    S.loadFailures = [];
+    if (!stale && cards[0].printing !== undefined) saveDailyPrices(feed, cards, products);
+    return { fromCache: true };
+  }
+
   async function fetchCards(force) {
-    if (!force) {
-      const cached = load(KEY.cards, null);
-      // Older caches can omit an unpriced finish or gameplay fields.
-      if (cached && cached.rows?.length && cached.feed?.source === SRC.base() && cached.feed?.schema === 3) {
-        const cards = cached.rows.map(fatCard);
-        const products = cached.products || [];
-        applyCards(cards, cached.at, products, cached.feed);
-        if (cards[0].printing !== undefined) saveDailyPrices(cached.feed, cards, products);
-        return { fromCache: true };
-      }
-    }
+    const cached = cachedCatalog();
+    if (!force && cached?.feed.schema === CATALOG_SCHEMA) return useCachedCards(cached, false);
     // v2: one CSV per set from TCGCSV, through the Worker. source.js does the
     // parsing and shaping; this function only decides what to keep and when.
     //
-    // The set list is built from the live group list rather than hardcoded, so
-    // a set TCGplayer adds tomorrow shows up without a code change — it lands
-    // in the promo namespace until it is given pull rates in data.js.
-    return fetchCurrentCards(await SRC.loadUpdated());
+    // New booster groups remain browsable without inventing pull rates.
+    try {
+      return await fetchCurrentCards(await SRC.loadUpdated());
+    } catch (error) {
+      if (cached && cached.feed.source === SRC.base()) return useCachedCards(cached, true);
+      throw error;
+    }
   }
 
   async function refreshCachedCards() {
-    const updated = await SRC.loadUpdated();
-    if (!updated) return;
-    if (S.catalogFeed?.schema === 3 && S.catalogFeed.updated === updated && S.catalogFeed.source === SRC.base() &&
-        !S.loadFailures?.length) return;
-    return fetchCurrentCards(updated);
+    try {
+      const updated = await SRC.loadUpdated();
+      if (!updated) throw new Error('Feed update time unavailable');
+      if (S.catalogFeed?.schema === CATALOG_SCHEMA && S.catalogFeed.updated === updated && S.catalogFeed.source === SRC.base() &&
+          !S.loadFailures?.length && !S.catalogFeed.stale) return;
+      return await fetchCurrentCards(updated);
+    } catch (error) {
+      if (!S.cards.length || S.catalogFeed?.source !== SRC.base()) throw error;
+      S.catalogFeed = { ...S.catalogFeed, stale: true };
+      return { fromCache: true };
+    }
   }
 
   async function fetchCurrentCards(updated) {
@@ -417,9 +439,35 @@
     // nothing — but it must not be cached as if it were complete, or one bad
     // afternoon would freeze a hole in the data until the next manual refresh.
     const complete = failed.length === 0;
+    let migrationPending = false;
+
+    if (!complete) {
+      // Several event groups share PROMO, and some decks share a set ID. Keep
+      // missing rows conservatively in failed namespaces; fresh IDs win.
+      const previous = S.catalogFeed?.source === source && S.cards.length
+        ? { rows: S.cards, products: S.products, feed: S.catalogFeed } : cachedCatalog();
+      // Older catalogs can misclassify a future booster as PROMO. Until a
+      // complete refresh, its old namespace cannot identify which group failed.
+      migrationPending = [2, 3].includes(previous?.feed?.schema) || !!previous?.feed?.migrationPending;
+      const failedSets = new Set(failed.map(f => f.set));
+      const cardKeys = new Set(cards.map(E.cardKey));
+      const productIds = new Set(products.map(p => String(p.id)));
+      for (const card of previous?.rows || []) {
+        if ((migrationPending || failedSets.has(card.set_id)) && !cardKeys.has(E.cardKey(card))) {
+          cards.push(fatCard({ ...card }));
+          cardKeys.add(E.cardKey(card));
+        }
+      }
+      for (const product of previous?.products || []) {
+        if ((migrationPending || failedSets.has(product.set_id)) && !productIds.has(String(product.id))) {
+          products.push(product);
+          productIds.add(String(product.id));
+        }
+      }
+    }
 
     const at = new Date().toISOString();
-    const feed = { updated, mock, source, schema: 3 };
+    const feed = { updated, mock, source, schema: CATALOG_SCHEMA, partial: !complete, migrationPending };
     if (complete) save(KEY.cards, { at, rows: cards.map(slimCard), products, feed });
     applyCards(cards, at, products, feed);
     if (complete) saveDailyPrices(feed, cards, products);
@@ -2052,6 +2100,7 @@
     $('#data-info').innerHTML =
       `<b>${S.cards.length.toLocaleString()}</b> cards across <b>${liveSets().length}</b> sets.<br>
        Last fetched: <b>${S.fetchedAt ? new Date(S.fetchedAt).toLocaleString() : 'never'}</b>.<br>
+       ${esc(catalogDate())}.<br>
        Source: <a href="https://tcgcsv.com/" target="_blank" rel="noopener">tcgcsv.com</a> — TCGplayer English prices, rebuilt daily.`;
 
   }
@@ -3291,10 +3340,12 @@
     if (!feed) return '';
     const date = new Date(feed.updated || NaN);
     const label = feed.mock ? 'Local sample · TCGplayer' : 'TCGplayer via TCGCSV';
-    if (!Number.isFinite(date.getTime())) return label + ' · Snapshot date unavailable';
+    const status = (feed.partial ? ' · Partial update; some sets may use saved prices' : '') +
+      (feed.stale ? ' · Refresh unavailable; using saved data' : '');
+    if (!Number.isFinite(date.getTime())) return label + ' · Snapshot date unavailable' + status;
     return label + ' · ' + date.toLocaleDateString(undefined, {
       timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric'
-    }) + (Date.now() - date.getTime() > 36 * 3600000 ? ' · Update overdue' : '');
+    }) + (Date.now() - date.getTime() > 36 * 3600000 ? ' · Update overdue' : '') + status;
   }
 
   function catalogOptions(select, options) {
