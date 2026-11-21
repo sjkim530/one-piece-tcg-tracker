@@ -185,7 +185,7 @@ window.SRC = (function () {
         donBooster: set.kind === 'booster',
         donProduct: set.kind === 'booster' ? null : set.name,
         donVariant: donVariant(row.name),
-        productKind: set.kind === 'booster' ? undefined : set.kind,
+        productKind: set.catalogOnly ? 'booster' : set.kind === 'booster' ? undefined : set.kind,
         originSet: set.origin,
         market_price: num(row.marketPrice),
         inventory_price: num(row.lowPrice),
@@ -221,7 +221,7 @@ window.SRC = (function () {
       // 'deck' or 'promo' otherwise, with the originating set kept separately
       // so a judge card still shows where its art came from without being
       // dropped into that set's pull pool.
-      productKind: set.kind === 'booster' ? undefined : set.kind,
+      productKind: set.catalogOnly ? 'booster' : set.kind === 'booster' ? undefined : set.kind,
       originSet: set.origin,
 
       // Five price points where v1 had two. market_price and inventory_price
@@ -293,6 +293,12 @@ window.SRC = (function () {
     }
 
     const abbr = (group.abbreviation || '').trim();
+    const newBooster = abbr.match(/^(OP|EB|PRB)-?(\d{2})$/i);
+    if (newBooster) {
+      const id = newBooster[1].toUpperCase() + '-' + newBooster[2];
+      return { id, group: group.groupId, name: group.name, short: abbr,
+        kind: 'booster', catalogOnly: true };
+    }
 
     // "ST-29", "ST-01 PRE", "ST-13". The pre-release printings are separate
     // products but belong with their deck for browsing purposes.

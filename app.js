@@ -119,7 +119,7 @@
     return {
       profile: prof,
       label: base.label,
-      verified: base.verified !== false,
+      verified: base.verified !== false && setMeta(setId)?.verified !== false,
       customised: !!S.setRates[setId],
       packsPerBox: sOver.packsPerBox != null ? sOver.packsPerBox
                  : pOver.packsPerBox != null ? pOver.packsPerBox
@@ -375,7 +375,7 @@
     if (!force) {
       const cached = load(KEY.cards, null);
       // Older caches can omit an unpriced finish or gameplay fields.
-      if (cached && cached.rows?.length && cached.feed?.source === SRC.base() && cached.feed?.schema === 2) {
+      if (cached && cached.rows?.length && cached.feed?.source === SRC.base() && cached.feed?.schema === 3) {
         const cards = cached.rows.map(fatCard);
         const products = cached.products || [];
         applyCards(cards, cached.at, products, cached.feed);
@@ -395,7 +395,7 @@
   async function refreshCachedCards() {
     const updated = await SRC.loadUpdated();
     if (!updated) return;
-    if (S.catalogFeed?.updated === updated && S.catalogFeed.source === SRC.base() &&
+    if (S.catalogFeed?.schema === 3 && S.catalogFeed.updated === updated && S.catalogFeed.source === SRC.base() &&
         !S.loadFailures?.length) return;
     return fetchCurrentCards(updated);
   }
@@ -419,7 +419,7 @@
     const complete = failed.length === 0;
 
     const at = new Date().toISOString();
-    const feed = { updated, mock, source, schema: 2 };
+    const feed = { updated, mock, source, schema: 3 };
     if (complete) save(KEY.cards, { at, rows: cards.map(slimCard), products, feed });
     applyCards(cards, at, products, feed);
     if (complete) saveDailyPrices(feed, cards, products);

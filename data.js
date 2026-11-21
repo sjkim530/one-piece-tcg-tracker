@@ -236,7 +236,8 @@ const OQ_DATA = (function () {
     { id: 'OP-16',     group: 24664, name: 'The Time of Battle',             short: 'OP16', profile: 'STANDARD', box: 150 },
     // New in v2. optcgapi never carried OP-17 at all — its database stops at
     // OP-15 by their own description, and OP-16 arrived only partially.
-    { id: 'OP-17',     group: 24736, name: "The World's Strongest Warriors", short: 'OP17', profile: 'STANDARD', box: 110 }
+    { id: 'OP-17',     group: 24736, name: "The World's Strongest Warriors", short: 'OP17', profile: 'STANDARD', box: 110 },
+    { id: 'OP-18',     group: 24833, name: 'The Dominance of God', short: 'OP18', profile: 'STANDARD', box: 0, verified: false }
   ];
 
   /* Everything above is sealed booster product. Starter decks and promos are
