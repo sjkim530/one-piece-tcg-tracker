@@ -41,7 +41,7 @@
 <link rel="apple-touch-icon" href="icons/vault-192.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/vault-192.png">
 
-<link rel="stylesheet" href="styles.css?v=3.7.8">
+<link rel="stylesheet" href="styles.css?v=3.7.9">
 </head>
 <body>
 
@@ -165,7 +165,8 @@
           <button class="btn primary" id="scan-camera" type="button">Use camera</button>
         </div>
         <div class="scan-actions" id="scan-controls" hidden>
-          <p class="scan-hint small muted">Fit one card inside the outline. Keep the card number clear.</p>
+          <p class="scan-hint" id="scan-quality" role="status" aria-live="polite">Align all four card edges with the outline.</p>
+          <label class="scan-auto"><input id="scan-auto" type="checkbox" checked> Auto capture</label>
           <button class="btn ghost" id="scan-cancel-camera" type="button">Cancel camera</button>
           <button class="btn primary" id="scan-capture" type="button" disabled>Scan card</button>
         </div>
@@ -667,8 +668,8 @@ if ('serviceWorker' in navigator) {
 <script src="source.js?v=3.7.6"></script>
 <script src="price-history.js?v=3.7.2"></script>
 <script src="market-analysis.js?v=3.7.0"></script>
-<script src="card-scan.js?v=3.6.1"></script>
+<script src="card-scan.js?v=3.7.9"></script>
 <script src="backup.js?v=3.5.0"></script>
-<script src="app.js?v=3.7.8"></script>
+<script src="app.js?v=3.7.9"></script>
 </body>
 </html>

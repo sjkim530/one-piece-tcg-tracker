@@ -38,6 +38,7 @@ jobs:
         run: |
           for file in app.js backup.js card-scan.js collection.js data.js engine.js source.js market-analysis.js price-history.js sw.js; do node --check "$file" || exit 1; done
           node tests-cache.cjs
+          node tests-scan.cjs
           node build-market-summary.cjs _site/market-summary.json
           cp index.html styles.css app.js backup.js card-scan.js collection.js data.js engine.js source.js market-analysis.js price-history.js sw.js manifest.json MARKET-BACKTEST.md _site/
           cp -r icons price-history _site/

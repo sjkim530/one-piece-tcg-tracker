@@ -49,6 +49,89 @@ const OQ_SCAN = (() => {
     return canvas;
   }
 
+  // A small preview sample includes a little background outside the outline.
+  // These conservative checks estimate framing/quality, not card identity or
+  // camera focus. Manual capture remains available for difficult foil/sleeves.
+  function analyzeFrame({ data, width, height }) {
+    const gray = new Float32Array(width * height);
+    for (let i = 0; i < gray.length; i++) gray[i] = .299 * data[i * 4] + .587 * data[i * 4 + 1] + .114 * data[i * 4 + 2];
+    const at = (x, y) => gray[Math.max(0, Math.min(height - 1, y)) * width + Math.max(0, Math.min(width - 1, x))];
+    const inset = (1 - 1 / 1.12) / 2;
+    const edge = (vertical, target) => {
+      const across = vertical ? width : height, along = vertical ? height : width;
+      const lo = Math.round((target - .035) * across), hi = Math.round((target + .035) * across);
+      const rows = [];
+      for (let n = 0; n < 40; n++) {
+        const pos = Math.round((.16 + .68 * n / 39) * along);
+        const values = [];
+        for (let axis = lo; axis <= hi; axis++) {
+          const a = vertical ? at(axis - 2, pos) : at(pos, axis - 2);
+          const b = vertical ? at(axis + 2, pos) : at(pos, axis + 2);
+          values.push(b - a);
+        }
+        rows.push({ values, peak: Math.max(...values.map(Math.abs)) });
+      }
+      let best = 0;
+      for (let axis = lo; axis <= hi; axis++) {
+        let positive = 0, negative = 0;
+        for (const row of rows) {
+          const value = row.values[axis - lo];
+          if (Math.abs(value) >= 18 && Math.abs(value) >= row.peak * .7) value > 0 ? positive++ : negative++;
+        }
+        const support = (positive + negative) / rows.length;
+        const coherent = Math.max(positive, negative) / Math.max(1, positive + negative);
+        if (coherent >= .65) best = Math.max(best, support);
+      }
+      return best;
+    };
+    let light = 0, clipped = 0, detail = 0, count = 0;
+    for (let y = Math.round(height * .13); y < height * .87; y++) {
+      for (let x = Math.round(width * .13); x < width * .87; x++) {
+        const value = at(x, y);
+        light += value;
+        if (value > 246) clipped++;
+        const lap = 4 * value - at(x - 1, y) - at(x + 1, y) - at(x, y - 1) - at(x, y + 1);
+        detail += lap * lap;
+        count++;
+      }
+    }
+    const brightness = light / count, sharpness = detail / count, glare = clipped / count;
+    const fingerprint = [];
+    for (let y = 0; y < 18; y++) for (let x = 0; x < 12; x++) {
+      fingerprint.push(at(Math.round((.15 + .7 * x / 11) * width), Math.round((.15 + .7 * y / 17) * height)));
+    }
+    let state = 'ready', message = 'Hold steady';
+    if (brightness < 45) { state = 'dark'; message = 'Add more light'; }
+    else if (brightness > 230 || glare > .18) { state = 'glare'; message = 'Tilt the card to reduce bright reflections'; }
+    else if ([edge(true, inset), edge(true, 1 - inset), edge(false, inset), edge(false, 1 - inset)].some(score => score < .6)) {
+      state = 'framing'; message = 'Move closer or align all four edges with the outline';
+    } else if (sharpness < 90) { state = 'blur'; message = 'Hold steady and let the camera focus'; }
+    return { state, message, fingerprint, brightness, sharpness, glare };
+  }
+
+  function createCaptureGate() {
+    let previous, since, last, frames = 0, captured = false;
+    function reset() { previous = undefined; since = last = undefined; frames = 0; captured = false; }
+    function update(quality, now, enabled = true) {
+      if (captured) return { capture: false, message: 'Scanning…', state: 'capturing' };
+      const motion = previous && previous.length === quality.fingerprint.length
+        ? quality.fingerprint.reduce((sum, value, i) => sum + Math.abs(value - previous[i]), 0) / previous.length : Infinity;
+      previous = quality.fingerprint;
+      if (!enabled || quality.state !== 'ready' || motion > 6 || last == null || now - last > 350 || now < last) {
+        since = undefined; frames = 0;
+      }
+      last = now;
+      if (quality.state !== 'ready') return { capture: false, message: quality.message, state: quality.state };
+      if (!enabled) return { capture: false, message: 'Auto capture off · Tap Scan card when ready', state: 'manual' };
+      if (motion > 6) return { capture: false, message: 'Hold steady', state: 'moving' };
+      if (since == null) since = now;
+      frames++;
+      captured = now - since >= 800 && frames >= 5;
+      return { capture: captured, message: captured ? 'Scanning…' : 'Hold steady · Getting ready to scan', state: captured ? 'capturing' : 'steady' };
+    }
+    return { reset, update };
+  }
+
   // Compare a five-point silhouette in either contrast polarity. A weak
   // match leaves the printing order alone, and every candidate stays visible.
   function hasStar(canvas) {
@@ -186,5 +269,5 @@ const OQ_SCAN = (() => {
     }
   }
 
-  return { normalize, readNumbers, picture, recognize };
+  return { normalize, readNumbers, picture, recognize, analyzeFrame, createCaptureGate };
 })();

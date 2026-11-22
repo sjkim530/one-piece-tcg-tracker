@@ -1376,6 +1376,15 @@ button.dialog-close {
 .scan-actions .btn { min-height: 46px; }
 #scan-capture { min-width: min(145px, 100%); }
 .scan-hint { flex: 0 0 100%; margin: 0 0 1px; text-align: center; }
+.scan-hint { font-size: 13px; line-height: 1.35; min-height: 2.7em; display: grid; align-content: center; }
+.scan-auto { display: inline-flex; align-items: center; gap: 7px; min-height: 44px; margin-right: auto; font-size: 13px; }
+.scan-auto input { width: 18px; height: 18px; accent-color: var(--sea); }
+.scan-guide[data-quality="steady"] { border-color: #70e0ab; }
+.scan-guide[data-quality="glare"], .scan-guide[data-quality="dark"], .scan-guide[data-quality="blur"] { border-color: #ffd077; }
+@media (max-width: 420px) {
+  #scan-controls .btn { padding-inline: 10px; }
+  .scan-auto { flex-basis: 100%; justify-content: center; margin: 0; }
+}
 .scan-privacy { margin: 0 0 10px; }
 #scan-status:empty, #scan-results:empty { display: none; }
 #scan-status { margin: 0 0 12px; }

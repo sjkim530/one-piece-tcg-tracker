@@ -3752,9 +3752,17 @@
     const star = $('#scan-star');
     const status = $('#scan-status');
     const results = $('#scan-results');
+    const quality = $('#scan-quality');
+    const automatic = $('#scan-auto');
+    const gate = OQ_SCAN.createCaptureGate();
+    const sample = document.createElement('canvas');
+    const sampleContext = sample.getContext('2d', { willReadFrequently: true });
     let stream;
     let job;
     let cameraRequest;
+    let previewTimer;
+    let cameraSession = 0;
+    let capturing = false;
 
     function cameraMode(active) {
       dialog.classList.toggle('camera-active', active);
@@ -3764,12 +3772,42 @@
     }
 
     function stopCamera() {
+      cameraSession++;
+      clearTimeout(previewTimer);
+      previewTimer = null;
+      gate.reset();
+      sample.width = sample.height = 0;
       cameraRequest = null;
       stream?.getTracks().forEach(track => track.stop());
       stream = null;
       video.srcObject = null;
       camera.disabled = false;
       cameraMode(false);
+    }
+
+    function preview(session) {
+      if (session !== cameraSession || !stream || !dialog.open || document.hidden) return;
+      updateGuide();
+      const region = crop();
+      if (region && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && sampleContext) {
+        // Include background just outside the guide, so framing checks look
+        // for the outer card boundary instead of mistaking artwork for it.
+        const [x, y, w, h] = region;
+        try {
+          sample.width = 180; sample.height = 252;
+          sampleContext.drawImage(video, (x - w * .06) * video.videoWidth, (y - h * .06) * video.videoHeight,
+            w * 1.12 * video.videoWidth, h * 1.12 * video.videoHeight, 0, 0, 180, 252);
+          const result = gate.update(OQ_SCAN.analyzeFrame(sampleContext.getImageData(0, 0, 180, 252)), performance.now(), automatic.checked);
+          if (quality.textContent !== result.message) quality.textContent = result.message;
+          guide.dataset.quality = result.state;
+          if (result.capture && captureFrame()) return;
+        } catch (_) {
+          // A preview check must never prevent manual capture.
+          quality.textContent = 'Auto capture unavailable · Tap Scan card when ready';
+          gate.reset();
+        }
+      }
+      previewTimer = setTimeout(() => preview(session), 160);
     }
 
     function showMatches(numbers) {
@@ -3842,6 +3880,7 @@
     camera.addEventListener('click', async () => {
       job?.abort();
       stopCamera();
+      capturing = false;
       const request = cameraRequest = {};
       camera.disabled = true;
       status.textContent = 'Waiting for camera access…';
@@ -3850,7 +3889,7 @@
           video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
           audio: false
         });
-        if (!dialog.open || cameraRequest !== request) {
+        if (!dialog.open || document.hidden || cameraRequest !== request) {
           next.getTracks().forEach(track => track.stop());
           return;
         }
@@ -3863,8 +3902,11 @@
           status.focus();
         }, { once: true });
         cameraMode(true);
+        quality.textContent = 'Align all four card edges with the outline.';
+        guide.dataset.quality = 'framing';
         $('#scan-cancel-camera').focus({ preventScroll: true });
         updateGuide();
+        preview(cameraSession);
       } catch (_) {
         if (dialog.open && cameraRequest === request) {
           camera.disabled = false;
@@ -3898,14 +3940,39 @@
     video.addEventListener('loadeddata', updateGuide);
     video.addEventListener('playing', updateGuide);
     new ResizeObserver(updateGuide).observe(viewfinder);
-    capture.addEventListener('click', () => {
+    function captureFrame() {
       const region = crop();
-      if (!region || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
-      const frame = OQ_SCAN.picture(video, { width: video.videoWidth, height: video.videoHeight }, region);
+      if (capturing || !stream || !dialog.open || document.hidden || !region || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+      capturing = true;
+      let frame;
+      try {
+        frame = OQ_SCAN.picture(video, { width: video.videoWidth, height: video.videoHeight }, region);
+      } catch (_) {
+        capturing = false;
+        gate.reset();
+        quality.textContent = 'Could not capture this frame. Hold steady and try Scan card.';
+        return;
+      }
       stopCamera();
       scan(() => frame);
       status.focus({ preventScroll: true });
-    });
+      return true;
+    }
+    capture.addEventListener('click', captureFrame);
+    automatic.addEventListener('change', () => gate.reset());
+    function suspendScanner() {
+      if (job && !stream && !cameraRequest) {
+        job.abort();
+        status.textContent = 'Scan paused. Retake the photo or enter a card number.';
+      }
+      if (!stream && !cameraRequest) return;
+      stopCamera();
+      job?.abort();
+      status.textContent = 'Camera paused. Tap Use camera to resume.';
+    }
+    document.addEventListener('visibilitychange', () => { if (document.hidden) suspendScanner(); });
+    window.addEventListener('pagehide', () => { job?.abort(); suspendScanner(); });
+    dialog.addEventListener('close', () => { job?.abort(); stopCamera(); });
     file.addEventListener('change', () => {
       const photo = file.files[0];
       file.value = '';
