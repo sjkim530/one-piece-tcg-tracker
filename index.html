@@ -41,7 +41,7 @@
 <link rel="apple-touch-icon" href="icons/vault-192.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/vault-192.png">
 
-<link rel="stylesheet" href="styles.css?v=3.7.4">
+<link rel="stylesheet" href="styles.css?v=3.7.8">
 </head>
 <body>
 
@@ -247,6 +247,25 @@
       </div>
       </div>
       </div>
+    </dialog>
+    <dialog class="artwork-dialog" id="artwork-dialog" aria-labelledby="artwork-title" aria-describedby="artwork-number artwork-help">
+      <header class="artwork-header">
+        <div><h2 id="artwork-title"></h2><p id="artwork-number"></p></div>
+        <button class="btn dialog-close" id="artwork-close" type="button" aria-label="Close enlarged artwork" autofocus><span aria-hidden="true">×</span></button>
+      </header>
+      <div class="artwork-viewport" id="artwork-viewport" tabindex="0" aria-label="Card artwork. Scroll to inspect when zoomed.">
+        <div class="artwork-surface"><img id="artwork-image" alt="" hidden></div>
+        <p class="artwork-status" id="artwork-status" role="status">Loading artwork…</p>
+      </div>
+      <footer class="artwork-footer">
+        <div class="artwork-zoom" role="group" aria-label="Artwork zoom">
+          <button class="btn" id="artwork-zoom-out" type="button" aria-label="Zoom out" disabled>−</button>
+          <button class="btn" id="artwork-fit" type="button" disabled>Fit</button>
+          <output id="artwork-zoom-level" aria-live="polite">Fit</output>
+          <button class="btn" id="artwork-zoom-in" type="button" aria-label="Zoom in" disabled>+</button>
+        </div>
+        <p id="artwork-help">Zoom to inspect; swipe or scroll to move around.</p>
+      </footer>
     </dialog>
     <dialog class="catalog-dialog" id="set-analysis-dialog" aria-labelledby="set-analysis-title">
       <div class="catalog-dialog-top">
@@ -650,6 +669,6 @@ if ('serviceWorker' in navigator) {
 <script src="market-analysis.js?v=3.7.0"></script>
 <script src="card-scan.js?v=3.6.1"></script>
 <script src="backup.js?v=3.5.0"></script>
-<script src="app.js?v=3.7.7"></script>
+<script src="app.js?v=3.7.8"></script>
 </body>
 </html>

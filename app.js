@@ -3470,7 +3470,11 @@
     $('#catalog-finish-field').hidden = !printings || printings.length < 2;
     catalogOptions($('#catalog-finish'), (printings || []).map(finish => [finish, finish || 'Default finish']));
     $('#catalog-finish').value = catalogPrinting ?? '';
-    $('#catalog-preview').innerHTML = cardArt(card, 'catalog-art');
+    const artwork = cardArt(card, 'catalog-art');
+    $('#catalog-preview').innerHTML = card.card_image && artFlag(card)?.kind !== 0
+      ? `<button class="artwork-preview" type="button" data-enlarge-artwork
+          aria-label="Enlarge artwork for ${esc(C.cardTitle(card.card_name, card.card_set_id))}">
+          ${artwork}<span>View larger</span></button>` : artwork;
     $('#catalog-card').innerHTML = `<div class="card-identity">
         <div class="small muted">${esc(card.card_set_id || card.set_id)} · ${esc(badge.label)}</div>
         <h2 id="catalog-card-title">${esc(C.cardTitle(card.card_name, card.card_set_id))}</h2>
@@ -3635,6 +3639,102 @@
     $('#catalog-ownership').textContent = message || (count
       ? `${label} · ${count} in this binder`
       : `${label} · Add raw near-mint copies. Edit condition, grade, or purchase details in My Collection.`);
+  }
+
+  function wireArtworkViewer() {
+    const dialog = $('#artwork-dialog');
+    const viewport = $('#artwork-viewport');
+    const image = $('#artwork-image');
+    const status = $('#artwork-status');
+    const zoomOut = $('#artwork-zoom-out');
+    const zoomIn = $('#artwork-zoom-in');
+    const fit = $('#artwork-fit');
+    let zoom = 1;
+    let ready = false;
+    let returnFocus;
+
+    function sizeImage() {
+      zoomOut.disabled = !ready || zoom <= 1;
+      zoomIn.disabled = !ready || zoom >= 3;
+      fit.disabled = !ready;
+      $('#artwork-zoom-level').textContent = zoom === 1 ? 'Fit' : `${zoom}×`;
+      if (!ready) return;
+      const ratio = image.naturalWidth / image.naturalHeight;
+      const width = Math.min(Math.max(1, viewport.clientWidth - 32), Math.max(1, viewport.clientHeight - 32) * ratio);
+      image.style.width = `${width * zoom}px`;
+    }
+
+    function changeZoom(next) {
+      const old = zoom;
+      const centerX = (viewport.scrollLeft + viewport.clientWidth / 2) / Math.max(1, viewport.scrollWidth);
+      const centerY = (viewport.scrollTop + viewport.clientHeight / 2) / Math.max(1, viewport.scrollHeight);
+      zoom = Math.max(1, Math.min(3, next));
+      sizeImage();
+      if (zoom === 1) viewport.scrollTo(0, 0);
+      else if (zoom !== old) viewport.scrollTo(centerX * viewport.scrollWidth - viewport.clientWidth / 2,
+        centerY * viewport.scrollHeight - viewport.clientHeight / 2);
+    }
+
+    on('#catalog-preview', 'click', event => {
+      const trigger = event.target.closest('[data-enlarge-artwork]');
+      const card = S.byKey[catalogCardKey];
+      if (!trigger || !card?.card_image) return;
+      returnFocus = trigger;
+      ready = false;
+      zoom = 1;
+      image.hidden = true;
+      image.removeAttribute('src');
+      image.style.width = '';
+      status.hidden = false;
+      status.textContent = 'Loading artwork…';
+      $('#artwork-title').textContent = C.cardTitle(card.card_name, card.card_set_id);
+      $('#artwork-number').textContent = [card.card_set_id || card.set_id, card.set_name || setName(card.set_id)].join(' · ');
+      image.alt = `${C.cardTitle(card.card_name, card.card_set_id)} · ${card.card_set_id || card.set_id}`;
+      sizeImage();
+      dialog.showModal();
+      viewport.scrollTo(0, 0);
+      image.src = card.card_image;
+    });
+    image.addEventListener('load', () => {
+      if (!dialog.open || !image.naturalWidth) return;
+      ready = true;
+      image.hidden = false;
+      status.hidden = true;
+      sizeImage();
+    });
+    image.addEventListener('error', () => {
+      if (!dialog.open || !image.hasAttribute('src')) return;
+      ready = false;
+      image.hidden = true;
+      status.hidden = false;
+      status.textContent = 'Artwork could not load. Close this view and try again when connected.';
+      sizeImage();
+    });
+    zoomOut.addEventListener('click', () => changeZoom(zoom - .5));
+    zoomIn.addEventListener('click', () => changeZoom(zoom + .5));
+    fit.addEventListener('click', () => changeZoom(1));
+    on('#artwork-close', 'click', () => dialog.close());
+    // Only a gesture that starts and ends on the backdrop dismisses the view.
+    let backdropPress = false;
+    dialog.addEventListener('pointerdown', event => { backdropPress = event.target === dialog; });
+    dialog.addEventListener('click', event => {
+      if (backdropPress && event.target === dialog) dialog.close();
+      backdropPress = false;
+    });
+    dialog.addEventListener('close', () => {
+      ready = false;
+      zoom = 1;
+      image.removeAttribute('src');
+      image.hidden = true;
+      viewport.scrollTo(0, 0);
+      if ($('#catalog-dialog').open) {
+        const trigger = returnFocus?.isConnected ? returnFocus : $('#catalog-preview [data-enlarge-artwork]');
+        trigger?.focus({ preventScroll: true });
+      }
+      returnFocus = null;
+    });
+    $('#catalog-dialog').addEventListener('close', () => { if (dialog.open) dialog.close(); });
+    window.addEventListener('resize', () => { if (dialog.open) sizeImage(); });
   }
 
   function wireCardScan() {
@@ -3837,6 +3937,7 @@
   }
 
   function wireCatalog() {
+    wireArtworkViewer();
     wireCardScan();
     wireCatalogComps();
     wireWatchlist();

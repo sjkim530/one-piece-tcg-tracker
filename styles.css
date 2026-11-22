@@ -1196,6 +1196,40 @@ button.btn:hover { color: var(--ink); }
 .card-workspace { display: grid; grid-template-columns: minmax(175px, .72fr) minmax(0, 1.55fr); gap: clamp(18px, 3vw, 34px); align-items: start; }
 #catalog-preview { background: #e6edf9; border-radius: var(--r); padding: clamp(10px, 2vw, 22px); }
 #catalog-preview .catalog-art { width: 100%; display: block; border-radius: 5%; }
+.artwork-preview {
+  display: grid; gap: 7px; width: 100%; padding: 0; border: 0; background: transparent;
+  color: var(--catalog-accent); font: 650 12px/1.3 var(--sans); cursor: zoom-in;
+}
+.artwork-preview > span { display: grid; place-items: center; min-height: 28px; }
+.artwork-preview:focus-visible { outline: 3px solid var(--catalog-accent); outline-offset: 4px; border-radius: 6px; }
+.artwork-dialog {
+  width: min(1000px, 100%); height: 100dvh; max-width: 100%; max-height: 100dvh;
+  margin: auto; padding: 0; border: 0; background: var(--panel); color: var(--ink);
+  overscroll-behavior: contain;
+}
+.artwork-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.artwork-dialog::backdrop { background: #080e1ce8; }
+.artwork-header {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: max(12px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left));
+}
+.artwork-header > div { min-width: 0; flex: 1; }
+.artwork-header h2 { font-size: clamp(17px, 3vw, 23px); line-height: 1.2; margin: 0; overflow-wrap: anywhere; }
+.artwork-header p { font-size: 12px; line-height: 1.4; margin: 5px 0 0; color: var(--ink-2); overflow-wrap: anywhere; }
+.artwork-viewport {
+  position: relative; overflow: auto; min-width: 0; min-height: 0; background: #111b2d;
+  overscroll-behavior: contain; scrollbar-color: #73839c #111b2d;
+}
+.artwork-viewport:focus-visible { outline: 3px solid #8aafff; outline-offset: -3px; }
+.artwork-surface { display: grid; place-items: center; width: max-content; min-width: 100%; min-height: 100%; padding: 16px; box-sizing: border-box; }
+#artwork-image { display: block; max-width: none; height: auto; border-radius: 3%; }
+#artwork-image[hidden] { display: none; }
+.artwork-status { position: absolute; inset: 30% 20px auto; color: #e2eafa; text-align: center; margin: 0; }
+.artwork-footer { padding: 10px 14px max(10px, env(safe-area-inset-bottom)); text-align: center; }
+.artwork-zoom { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.artwork-zoom .btn { min-width: 44px; min-height: 44px; padding: 7px 12px; }
+#artwork-zoom-level { min-width: 42px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.artwork-footer p { margin: 6px 0 0; font-size: 12px; line-height: 1.35; color: var(--ink-2); }
 .card-workspace-content { min-width: 0; }
 .card-identity h2 { font-size: clamp(23px, 4vw, 37px); letter-spacing: -.035em; line-height: 1.08; margin: 5px 0; overflow-wrap: anywhere; }
 .card-identity p { margin: 5px 0 8px; }
