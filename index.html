@@ -41,7 +41,7 @@
 <link rel="apple-touch-icon" href="icons/vault-192.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/vault-192.png">
 
-<link rel="stylesheet" href="styles.css?v=3.7.9">
+<link rel="stylesheet" href="styles.css?v=3.7.10">
 </head>
 <body>
 
@@ -144,6 +144,7 @@
         <button class="btn dialog-close" id="scan-close" type="button" aria-label="Close scanner" autofocus><span aria-hidden="true">×</span></button>
       </header>
       <div class="scan-content">
+        <p class="scan-quality" id="scan-quality" role="status" aria-live="polite" hidden>Starting camera preview…</p>
         <div class="scan-viewfinder" id="scan-viewfinder" hidden>
           <video id="scan-video" autoplay playsinline muted aria-label="Camera preview"></video>
           <span class="scan-guide" id="scan-guide" aria-hidden="true" hidden></span>
@@ -165,7 +166,6 @@
           <button class="btn primary" id="scan-camera" type="button">Use camera</button>
         </div>
         <div class="scan-actions" id="scan-controls" hidden>
-          <p class="scan-hint" id="scan-quality" role="status" aria-live="polite">Align all four card edges with the outline.</p>
           <label class="scan-auto"><input id="scan-auto" type="checkbox" checked> Auto capture</label>
           <button class="btn ghost" id="scan-cancel-camera" type="button">Cancel camera</button>
           <button class="btn primary" id="scan-capture" type="button" disabled>Scan card</button>
@@ -668,8 +668,8 @@ if ('serviceWorker' in navigator) {
 <script src="source.js?v=3.7.6"></script>
 <script src="price-history.js?v=3.7.2"></script>
 <script src="market-analysis.js?v=3.7.0"></script>
-<script src="card-scan.js?v=3.7.9"></script>
+<script src="card-scan.js?v=3.7.10"></script>
 <script src="backup.js?v=3.5.0"></script>
-<script src="app.js?v=3.7.9"></script>
+<script src="app.js?v=3.7.10"></script>
 </body>
 </html>

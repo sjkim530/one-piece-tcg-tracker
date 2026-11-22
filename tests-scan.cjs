@@ -49,6 +49,21 @@ test('stable eligible frames capture once after sustained readiness', () => {
   assert.equal(events.length, 1);
   assert.ok(events[0] >= 800);
 });
+for (const cadence of [400, 600]) {
+  test(`stable ${cadence}ms Android preview cadence captures once`, () => {
+    const gate = createCaptureGate(), q = quality(), events = [];
+    for (let t = 0; t <= 6000; t += cadence) if (gate.update(q, t).capture) events.push(t);
+    assert.equal(events.length, 1);
+    assert.ok(events[0] >= cadence * 5);
+  });
+}
+test('intermittent normal cadence still requires five distinct usable samples', () => {
+  const gate = createCaptureGate(), q = quality();
+  const times = [0, 450, 1050, 1210, 1710];
+  for (const t of times) assert.equal(gate.update(q, t).capture, false);
+  for (let i = 0; i < 30; i++) assert.equal(gate.update(q, 1710).capture, false);
+  assert.equal(gate.update(q, 2310).capture, true);
+});
 test('movement resets the steady interval', () => {
   const gate = createCaptureGate(), q = quality();
   for (let t = 0; t <= 640; t += 160) assert.equal(gate.update(q, t).capture, false);
@@ -74,18 +89,19 @@ test('long callback gaps cannot count as holding steady; reset re-arms next sess
   assert.equal(gate.update(q, 6000).capture, false);
 });
 
-function cameraHarness() {
+function cameraHarness({ contextUnavailable = false, frameError = false } = {}) {
   let now = 0, timerId = 0, scans = 0, stops = 0, cameraResolve;
   const timers = new Map(), nodes = new Map();
   function element() {
     const handlers = {};
     return { hidden: false, disabled: false, checked: true, value: '', textContent: '',
-      style: {}, dataset: {}, readyState: 2, videoWidth: 1080, videoHeight: 1920,
+      style: {}, dataset: {}, readyState: 2, currentTime: 0, videoWidth: 1080, videoHeight: 1920,
       clientWidth: 300, clientHeight: 400, classList: { toggle() {} },
       addEventListener(type, fn) { (handlers[type] ||= []).push(fn); },
       async emit(type, event = {}) { for (const fn of handlers[type] || []) await fn(event); },
       focus() {}, replaceChildren() {}, showModal() { this.open = true; }, close() { this.open = false; },
-      getContext() { return { drawImage() {}, getImageData() { return card; } }; }
+      play() { return Promise.resolve(); },
+      getContext() { return contextUnavailable ? null : { drawImage() { if (frameError) throw Error('Frame unavailable'); }, getImageData() { return card; } }; }
     };
   }
   const $ = selector => { if (!nodes.has(selector)) nodes.set(selector, element()); return nodes.get(selector); };
@@ -109,8 +125,9 @@ function cameraHarness() {
     const request = $('#scan-camera').emit('click');
     cameraResolve(stream); await request;
   }
-  async function tick() {
-    now += 160;
+  async function tick(duration = 160, advanceVideo = true) {
+    now += duration;
+    if (advanceVideo && $('#scan-video').readyState >= 2) $('#scan-video').currentTime += duration / 1000;
     const callbacks = [...timers.values()]; timers.clear();
     for (const callback of callbacks) callback();
     await Promise.resolve(); await Promise.resolve();
@@ -147,4 +164,57 @@ test('backgrounding stops preview and tracks and requires explicit resume', asyn
   assert.equal(h.stops(), 1); assert.equal(h.scans(), 0); assert.equal(h.timers.size, 0);
   h.document.hidden = false; await h.document.emit('visibilitychange');
   assert.equal(h.timers.size, 0);
+});
+
+test('slow camera frames capture through the actual preview loop', async () => {
+  const h = cameraHarness(); await h.openCamera();
+  for (let i = 0; i < 8; i++) await h.tick(600);
+  assert.equal(h.scans(), 1); assert.equal(h.stops(), 1);
+});
+test('delayed video readiness shows warming then actionable no-frame guidance', async () => {
+  const h = cameraHarness(), video = h.$('#scan-video');
+  video.readyState = 0; video.videoWidth = video.videoHeight = 0;
+  await h.openCamera();
+  assert.equal(h.$('#scan-quality').hidden, false);
+  assert.match(h.$('#scan-quality').textContent, /Starting camera/);
+  for (let i = 0; i < 6; i++) await h.tick(600);
+  assert.match(h.$('#scan-quality').textContent, /No camera frames yet/);
+  assert.equal(h.$('#scan-capture').disabled, true); assert.equal(h.scans(), 0);
+  video.readyState = 2; video.videoWidth = 1080; video.videoHeight = 1920;
+  await h.tick();
+  assert.match(h.$('#scan-quality').textContent, /Hold steady/);
+  assert.equal(h.$('#scan-capture').disabled, false);
+});
+test('a frozen video cannot be mistaken for independent steady frames', async () => {
+  const h = cameraHarness(); await h.openCamera();
+  for (let i = 0; i < 15; i++) await h.tick(160, false);
+  assert.equal(h.scans(), 0);
+  assert.match(h.$('#scan-quality').textContent, /Camera preview paused/);
+});
+for (const failure of [{ contextUnavailable: true }, { frameError: true }]) {
+  test(`preview analysis failure keeps visible manual fallback (${Object.keys(failure)[0]})`, async () => {
+    const h = cameraHarness(failure); await h.openCamera();
+    assert.match(h.$('#scan-quality').textContent, /Auto capture unavailable/);
+    assert.equal(h.$('#scan-quality').hidden, false);
+    assert.equal(h.$('#scan-capture').disabled, false);
+    await h.$('#scan-capture').emit('click');
+    assert.equal(h.scans(), 1);
+  });
+}
+test('video playback failure stops tracks and exposes retry message', async () => {
+  const h = cameraHarness();
+  h.$('#scan-video').play = () => Promise.reject(Error('Playback blocked'));
+  await h.openCamera();
+  assert.equal(h.stops(), 1); assert.equal(h.timers.size, 0);
+  assert.match(h.$('#scan-status').textContent, /preview could not start/);
+});
+test('late video playback failure cannot disrupt a newer camera request', async () => {
+  const h = cameraHarness(); let rejectPlay;
+  h.$('#scan-video').play = () => new Promise((_, reject) => { rejectPlay = reject; });
+  await h.openCamera();
+  await h.$('#scan-cancel-camera').emit('click');
+  h.$('#scan-video').play = () => Promise.resolve();
+  const newer = h.$('#scan-camera').emit('click'); h.resolveCamera(); await newer;
+  rejectPlay(Error('Old playback failed')); await Promise.resolve();
+  assert.equal(h.stops(), 1); assert.equal(h.$('#scan-controls').hidden, false);
 });

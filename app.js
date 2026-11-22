@@ -3756,18 +3756,24 @@
     const automatic = $('#scan-auto');
     const gate = OQ_SCAN.createCaptureGate();
     const sample = document.createElement('canvas');
-    const sampleContext = sample.getContext('2d', { willReadFrequently: true });
+    let sampleContext;
+    try { sampleContext = sample.getContext('2d', { willReadFrequently: true }); } catch (_) { /* Manual capture can still be attempted. */ }
     let stream;
     let job;
     let cameraRequest;
     let previewTimer;
     let cameraSession = 0;
     let capturing = false;
+    let previewStartedAt = 0;
+    let lastVideoTime;
+    let lastFrameAt = 0;
+    let analysisUnavailable = false;
 
     function cameraMode(active) {
       dialog.classList.toggle('camera-active', active);
       entry.hidden = options.hidden = active;
       viewfinder.hidden = controls.hidden = !active;
+      quality.hidden = !active;
       capture.disabled = guide.hidden = true;
     }
 
@@ -3776,6 +3782,7 @@
       clearTimeout(previewTimer);
       previewTimer = null;
       gate.reset();
+      lastVideoTime = undefined;
       sample.width = sample.height = 0;
       cameraRequest = null;
       stream?.getTracks().forEach(track => track.stop());
@@ -3785,11 +3792,30 @@
       cameraMode(false);
     }
 
+    function showQuality(message, state) {
+      if (quality.textContent !== message) quality.textContent = message;
+      guide.dataset.quality = state;
+    }
+
     function preview(session) {
       if (session !== cameraSession || !stream || !dialog.open || document.hidden) return;
       updateGuide();
       const region = crop();
-      if (region && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && sampleContext) {
+      const now = performance.now();
+      if (!region || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        gate.reset();
+        showQuality(now - previewStartedAt < 3000 ? 'Starting camera preview…' :
+          'No camera frames yet. Cancel and reopen the camera, or choose a photo.', 'warming');
+      } else if (!sampleContext || analysisUnavailable) {
+        showQuality('Auto capture unavailable · Tap Scan card when ready', 'manual');
+      } else if (lastVideoTime === video.currentTime) {
+        if (now - lastFrameAt > 1500) {
+          gate.reset();
+          showQuality('Camera preview paused. Cancel and reopen the camera, or choose a photo.', 'warming');
+        }
+      } else {
+        lastVideoTime = video.currentTime;
+        lastFrameAt = now;
         // Include background just outside the guide, so framing checks look
         // for the outer card boundary instead of mistaking artwork for it.
         const [x, y, w, h] = region;
@@ -3798,12 +3824,12 @@
           sampleContext.drawImage(video, (x - w * .06) * video.videoWidth, (y - h * .06) * video.videoHeight,
             w * 1.12 * video.videoWidth, h * 1.12 * video.videoHeight, 0, 0, 180, 252);
           const result = gate.update(OQ_SCAN.analyzeFrame(sampleContext.getImageData(0, 0, 180, 252)), performance.now(), automatic.checked);
-          if (quality.textContent !== result.message) quality.textContent = result.message;
-          guide.dataset.quality = result.state;
+          showQuality(result.message, result.state);
           if (result.capture && captureFrame()) return;
         } catch (_) {
           // A preview check must never prevent manual capture.
-          quality.textContent = 'Auto capture unavailable · Tap Scan card when ready';
+          analysisUnavailable = true;
+          showQuality('Auto capture unavailable · Tap Scan card when ready', 'manual');
           gate.reset();
         }
       }
@@ -3902,10 +3928,24 @@
           status.focus();
         }, { once: true });
         cameraMode(true);
-        quality.textContent = 'Align all four card edges with the outline.';
-        guide.dataset.quality = 'framing';
+        previewStartedAt = lastFrameAt = performance.now();
+        analysisUnavailable = false;
+        showQuality('Starting camera preview…', 'warming');
         $('#scan-cancel-camera').focus({ preventScroll: true });
         updateGuide();
+        // Explicit play surfaces preview failures that autoplay can otherwise
+        // leave looking like a working camera. Ignore late session callbacks.
+        try {
+          Promise.resolve(video.play()).catch(() => {
+            if (stream !== next || !dialog.open || cameraRequest !== request) return;
+            stopCamera();
+            status.textContent = 'Camera preview could not start. Tap Use camera to retry or choose a photo.';
+          });
+        } catch (_) {
+          stopCamera();
+          status.textContent = 'Camera preview could not start. Tap Use camera to retry or choose a photo.';
+          return;
+        }
         preview(cameraSession);
       } catch (_) {
         if (dialog.open && cameraRequest === request) {
@@ -3929,7 +3969,7 @@
     function updateGuide() {
       if (viewfinder.hidden) return;
       const region = crop();
-      if (!region) return;
+      if (!region) { capture.disabled = guide.hidden = true; return; }
       const scale = Math.min(video.clientWidth / video.videoWidth, video.clientHeight / video.videoHeight);
       guide.style.width = region[2] * video.videoWidth * scale + 'px';
       guide.style.height = region[3] * video.videoHeight * scale + 'px';

@@ -117,13 +117,18 @@ const OQ_SCAN = (() => {
       const motion = previous && previous.length === quality.fingerprint.length
         ? quality.fingerprint.reduce((sum, value, i) => sum + Math.abs(value - previous[i]), 0) / previous.length : Infinity;
       previous = quality.fingerprint;
-      if (!enabled || quality.state !== 'ready' || motion > 6 || last == null || now - last > 350 || now < last) {
+      // Analysis + scheduling can take 400–600 ms on a phone. Do not treat
+      // ordinary slower preview cadence as a suspension. Five distinct
+      // samples are still required; a genuinely long interruption resets.
+      const fresh = last !== now;
+      if (!enabled || quality.state !== 'ready' || motion > 6 || last == null || now - last > 1200 || now < last) {
         since = undefined; frames = 0;
       }
       last = now;
       if (quality.state !== 'ready') return { capture: false, message: quality.message, state: quality.state };
       if (!enabled) return { capture: false, message: 'Auto capture off · Tap Scan card when ready', state: 'manual' };
       if (motion > 6) return { capture: false, message: 'Hold steady', state: 'moving' };
+      if (!fresh) return { capture: false, message: 'Hold steady · Getting ready to scan', state: 'steady' };
       if (since == null) since = now;
       frames++;
       captured = now - since >= 800 && frames >= 5;

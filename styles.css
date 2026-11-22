@@ -1370,13 +1370,16 @@ button.dialog-close {
 .scan-header { padding: 10px 16px; border-bottom: 1px solid var(--line-soft); }
 .scan-header h2 { font-size: 22px; }
 .scan-content { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 14px 16px; }
-.camera-active .scan-content { display: grid; overflow: hidden; padding: 8px 12px; }
+.camera-active .scan-content { display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; padding: 8px 12px; }
+.scan-quality {
+  margin: 0 0 8px; padding: 10px 12px; min-height: 3em; box-sizing: border-box;
+  border-radius: 8px; background: #173577; color: #fff; font-size: 14px;
+  font-weight: 650; line-height: 1.35; text-align: center;
+}
 .scan-footer { padding: 10px 16px; border-top: 1px solid var(--line-soft); background: var(--bg-2); }
 .scan-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .scan-actions .btn { min-height: 46px; }
 #scan-capture { min-width: min(145px, 100%); }
-.scan-hint { flex: 0 0 100%; margin: 0 0 1px; text-align: center; }
-.scan-hint { font-size: 13px; line-height: 1.35; min-height: 2.7em; display: grid; align-content: center; }
 .scan-auto { display: inline-flex; align-items: center; gap: 7px; min-height: 44px; margin-right: auto; font-size: 13px; }
 .scan-auto input { width: 18px; height: 18px; accent-color: var(--sea); }
 .scan-guide[data-quality="steady"] { border-color: #70e0ab; }
