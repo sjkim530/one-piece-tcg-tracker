@@ -22,14 +22,15 @@ const OQ_SCAN = (() => {
 
   const normalize = value => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-  function readNumbers(text, knownNumbers) {
+  function readNumbers(text, knownNumbers, anchored = false) {
     const numbers = new Set();
+    const boundary = anchored ? '^' : String.raw`\b`;
     const separator = String.raw`[ \t]*[-–—:·.]?[ \t]*`;
     // OCR can join the rarity box or block icon to the three-digit serial.
     // A misread rarity box can look like M immediately before the round icon.
     const end = String.raw`(?=$|[^A-Z\d]|(?:SEC|SR|SP|TR|UC|PR|[CRL])?[0-9OIL]?\b|M(?=[ \t]+[©®○◯]))`;
-    const numbered = new RegExp(String.raw`\b([O0]P|ST|EB|PRB)${separator}([0-9OIL]{2})${separator}([0-9OIL]{3})${end}`, 'gi');
-    const promos = new RegExp(String.raw`\bP${separator}([0-9OIL]{3})${end}`, 'gi');
+    const numbered = new RegExp(boundary + String.raw`([O0]P|ST|EB|PRB)${separator}([0-9OIL]{2})${separator}([0-9OIL]{3})${end}`, 'gi');
+    const promos = new RegExp(boundary + String.raw`P${separator}([0-9OIL]{3})${end}`, 'gi');
     const digits = value => value.toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1');
     for (const [, prefix, set, number] of text.matchAll(numbered)) {
       numbers.add(prefix.toUpperCase().replace(/^0/, 'O') + digits(set + number));
@@ -38,7 +39,7 @@ const OQ_SCAN = (() => {
     // The rarity box/block symbol can become 88 or 8N immediately after the
     // serial. Recover only these observed suffixes and only a catalog number.
     if (knownNumbers?.size) {
-      const glued = new RegExp(String.raw`\b([O0]P|ST|EB|PRB)${separator}([0-9OIL]{2})${separator}([0-9OIL]{3})(?:88|8N|8R|B8|BN)(?=$|[^A-Z\d])`, 'gi');
+      const glued = new RegExp(boundary + String.raw`([O0]P|ST|EB|PRB)${separator}([0-9OIL]{2})${separator}([0-9OIL]{3})(?:88|80|8O|8N|8R|B8|BN)(?=$|[^A-Z\d])`, 'gi');
       for (const [, prefix, set, number] of text.matchAll(glued)) {
         const code = prefix.toUpperCase().replace(/^0/, 'O') + digits(set + number);
         if (knownNumbers.has(code)) numbers.add(code);
@@ -58,7 +59,7 @@ const OQ_SCAN = (() => {
     return canvas;
   }
 
-  // Full-frame checks reject only gross exposure or movement. OCR, rather
+  // Full-frame checks reject only gross unusable exposure. OCR, rather
   // than an assumed card border, decides whether a card is present.
   function analyzeFrame({ data, width, height }) {
     const fingerprint = [];
@@ -73,88 +74,91 @@ const OQ_SCAN = (() => {
     const brightness = light / count;
     if (brightness < 25) return { state: 'dark', message: 'Add more light so the card text is visible', fingerprint, brightness };
     if (brightness > 248) return { state: 'bright', message: 'Reduce bright reflections so the card text is visible', fingerprint, brightness };
-    return { state: 'ready', message: 'Hold the card steady anywhere in the camera view', fingerprint, brightness };
+    return { state: 'ready', message: 'Keep one card visible anywhere in the camera view', fingerprint, brightness };
   }
 
-  function createCaptureGate() {
-    let previous, since, last, frames = 0, captured = false;
-    function reset() { previous = undefined; since = last = undefined; frames = 0; captured = false; }
-    function update(quality, now, enabled = true) {
-      const hadPrevious = !!previous;
-      const motion = previous && previous.length === quality.fingerprint.length
-        ? quality.fingerprint.reduce((sum, value, i) => sum + Math.abs(value - previous[i]), 0) / previous.length : Infinity;
-      previous = quality.fingerprint;
-      // Analysis + scheduling can take 400–600 ms on a phone. Do not treat
-      // ordinary slower preview cadence as a suspension. Five distinct
-      // samples are still required; a genuinely long interruption resets.
-      const fresh = last !== now;
-      if (!enabled || quality.state !== 'ready' || motion > 6 || last == null || now - last > 1200 || now < last) {
-        since = undefined; frames = 0;
-      }
-      last = now;
-      if (quality.state !== 'ready') return { capture: false, message: quality.message, state: quality.state };
-      if (!enabled) return { capture: false, message: 'Auto capture off · Tap Scan card when ready', state: 'manual' };
-      if (motion > 6) return { capture: false, message: 'Hold steady', state: hadPrevious ? 'moving' : 'steady' };
-      // Keep tracking motion while an OCR probe is running. Readiness is
-      // latched, but movement must still invalidate that probe's evidence.
-      if (captured) return { capture: false, message: 'Scanning…', state: 'capturing' };
-      if (!fresh) return { capture: false, message: 'Hold steady · Getting ready to scan', state: 'steady' };
-      if (since == null) since = now;
-      frames++;
-      captured = now - since >= 800 && frames >= 5;
-      return { capture: captured, message: captured ? 'Scanning…' : 'Hold steady · Getting ready to scan', state: captured ? 'capturing' : 'steady' };
+  // Look only beside a catalog-matched code, using the OCR boxes from
+  // these exact pixels. A positive means a visible printing star; no match
+  // means unknown, not proof that this is the regular printing.
+  function detectPrintingStar(canvas, data, numbers) {
+    if (numbers.length !== 1) return null;
+    const lines = [];
+    for (const block of data.blocks || []) for (const paragraph of block.paragraphs || []) {
+      lines.push(...(paragraph.lines || []));
     }
-    return { reset, update };
-  }
-
-  // Compare a five-point silhouette in either contrast polarity. A weak
-  // match leaves the printing order alone, and every candidate stays visible.
-  function hasStar(canvas) {
+    if (data.words?.length) lines.push({ words: data.words });
+    const anchors = [];
+    const known = new Set(numbers);
+    for (const line of lines) {
+      const words = line.words || [];
+      for (let i = 0; i < words.length; i++) for (let n = 1; n <= 3 && i + n <= words.length; n++) {
+        const run = words.slice(i, i + n), text = run.map(word => word.text).join(' ');
+        // Reuse the canonical code parser so O/I/L digit confusions are
+        // handled identically. Anchor at the start to exclude unrelated text
+        // or a later valid code following a malformed leading token.
+        if (!readNumbers(text.trim(), known, true).some(number => known.has(number))) continue;
+        if (/[★☆✦]/u.test(text)) return true;
+        const boxes = run.map(word => word.bbox).filter(box => box && box.x1 > box.x0 && box.y1 > box.y0);
+        if (boxes.length !== run.length) continue;
+        anchors.push({ x0: Math.min(...boxes.map(box => box.x0)), y0: Math.min(...boxes.map(box => box.y0)),
+          x1: Math.max(...boxes.map(box => box.x1)), y1: Math.max(...boxes.map(box => box.y1)) });
+        break;
+      }
+    }
+    if (!anchors.length) return null;
     const { width, height } = canvas;
-    const pixels = canvas.getContext('2d').getImageData(0, 0, width, height).data;
+    let pixels;
+    try { pixels = canvas.getContext('2d').getImageData(0, 0, width, height).data; }
+    catch (_) { return null; }
     const vertices = Array.from({ length: 10 }, (_, i) => {
-      const angle = i * Math.PI / 5 - Math.PI / 2;
-      const radius = i % 2 ? .43 : 1;
+      const angle = i * Math.PI / 5 - Math.PI / 2, radius = i % 2 ? .43 : 1;
       return [Math.cos(angle) * radius, Math.sin(angle) * radius];
     });
     const inside = [], outside = [];
-    for (let y = -11; y <= 11; y += 2) {
-      for (let x = -11; x <= 11; x += 2) {
-        let filled = false;
-        for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
-          const [ax, ay] = vertices[i];
-          const [bx, by] = vertices[j];
-          if ((ay > y / 10) !== (by > y / 10) &&
-              x / 10 < (bx - ax) * (y / 10 - ay) / (by - ay) + ax) filled = !filled;
-        }
-        (filled ? inside : outside).push([x / 10, y / 10]);
+    for (let y = -11; y <= 11; y += 2) for (let x = -11; x <= 11; x += 2) {
+      let filled = false;
+      for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+        const [ax, ay] = vertices[i], [bx, by] = vertices[j];
+        if ((ay > y / 10) !== (by > y / 10) && x / 10 < (bx - ax) * (y / 10 - ay) / (by - ay) + ax) filled = !filled;
       }
+      (filled ? inside : outside).push([x / 10, y / 10]);
     }
-    for (const fraction of [.008, .011, .0133, .016, .019]) {
-      const radius = Math.max(3, width * fraction);
-      const step = Math.max(1, Math.floor(radius / 4));
-      for (let y = height * .72; y < height - radius * 1.3; y += step) {
-        for (let x = width * .68; x < width - radius * 1.3; x += step) {
-          let sum = 0, square = 0, difference = 0;
-          for (const [points, sign] of [[inside, 1], [outside, -1]]) {
-            let group = 0;
-            for (const [dx, dy] of points) {
-              const i = 4 * (Math.round(y + dy * radius) * width + Math.round(x + dx * radius));
-              const value = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
-              group += value;
-              square += value * value;
+    for (const box of anchors) {
+      const h = box.y1 - box.y0, w = box.x1 - box.x0;
+      // OCR often merges the number, rarity box and block icon. The star can
+      // be inside that merged word's upper-right area, not outside its end.
+      for (const fraction of [.14, .18, .22, .26, .30, .34, .38, .42]) {
+        const radius = Math.max(2, h * fraction), step = Math.max(1, radius / 4);
+        for (let y = Math.max(radius * 1.2, box.y0 - h); y <= Math.min(height - radius * 1.2, box.y0 + h * .6); y += step) {
+          for (let x = Math.max(radius * 1.2, box.x0 + w * .5); x <= Math.min(width - radius * 1.2, box.x1 + h * .5); x += step) {
+            let sum = 0, square = 0, difference = 0;
+            for (const [points, sign] of [[inside, 1], [outside, -1]]) {
+              let group = 0;
+              for (const [dx, dy] of points) {
+                const i = 4 * (Math.round(y + dy * radius) * width + Math.round(x + dx * radius));
+                const value = .299 * pixels[i] + .587 * pixels[i + 1] + .114 * pixels[i + 2];
+                group += value; square += value * value;
+              }
+              sum += group; difference += sign * group / points.length;
             }
-            sum += group;
-            difference += sign * group / points.length;
+            const count = inside.length + outside.length;
+            const variance = square / count - (sum / count) ** 2;
+            const correlation = Math.abs(difference) * Math.sqrt(inside.length * outside.length) / count / Math.sqrt(variance);
+            if (Math.abs(difference) >= 45 && correlation >= .70) return true;
           }
-          const samples = inside.length + outside.length;
-          const variance = square / samples - (sum / samples) ** 2;
-          const correlation = Math.abs(difference) * Math.sqrt(inside.length * outside.length) / samples / Math.sqrt(variance);
-          if (Math.abs(difference) > 70 && correlation > .81) return true;
         }
       }
     }
-    return false;
+    return null;
+  }
+
+  function applyStarEvidence(evidence, starred, { isStarred, cards = [] } = {}) {
+    if (starred !== true || evidence.numbers.length !== 1) return { ...evidence, starred: null };
+    const byId = new Map(cards.map(card => [String(card.id), card]));
+    const compatible = isStarred ? evidence.candidates.filter(candidate => byId.has(candidate.id) && isStarred(byId.get(candidate.id))) : [];
+    return { ...evidence, starred: true,
+      candidates: compatible.length ? compatible : evidence.candidates,
+      totalCandidates: compatible.length || evidence.totalCandidates };
   }
 
   function boostNumberContrast(canvas) {
@@ -207,7 +211,7 @@ const OQ_SCAN = (() => {
       recoveredNumbers: numbers.filter(number => !readNumbers(text).includes(number)),
       name: names.length === 1 ? names[0] : null,
       strongName: names.length === 1 && candidates.some(candidate => candidate.strong),
-      starred: /[★☆✦]/u.test(text) };
+      starred: null };
   }
 
   function createRecognizer(signal, progress = () => {}, options = {}) {
@@ -266,16 +270,20 @@ const OQ_SCAN = (() => {
           const crop = picture(frame, frame, region, scale);
           try {
             await run(ocr.setParameters({ tessedit_pageseg_mode: mode, preserve_interword_spaces: '1' }));
-            const result = await run(ocr.recognize(crop));
+            const result = await run(ocr.recognize(crop, {}, { text: true, blocks: true }));
             text += '\n' + result.data.text;
             evidence = resolveEvidence(text, options);
-            if (evidence.numbers.length || (probe && evidence.name && evidence.strongName)) return evidence;
+            if (evidence.numbers.length) return applyStarEvidence(evidence, detectPrintingStar(crop, result.data, evidence.numbers), options);
+            if (probe && evidence.name && evidence.strongName) return evidence;
             if (!probe && i > 0 && !evidence.numbers.length) {
-              boostNumberContrast(crop);
-              const enhanced = await run(ocr.recognize(crop));
-              text += '\n' + enhanced.data.text;
-              evidence = resolveEvidence(text, options);
-              if (evidence.numbers.length) return evidence;
+              const original = picture(crop, crop, [0, 0, 1, 1]);
+              try {
+                boostNumberContrast(crop);
+                const enhanced = await run(ocr.recognize(crop, {}, { text: true, blocks: true }));
+                text += '\n' + enhanced.data.text;
+                evidence = resolveEvidence(text, options);
+                if (evidence.numbers.length) return applyStarEvidence(evidence, detectPrintingStar(original, enhanced.data, evidence.numbers), options);
+              } finally { original.width = original.height = 0; }
             }
           } finally { crop.width = crop.height = 0; }
         }
@@ -294,5 +302,5 @@ const OQ_SCAN = (() => {
     finally { session.close(); }
   }
 
-  return { normalize, readNumbers, picture, recognize, analyzeFrame, createCaptureGate, resolveEvidence, createRecognizer };
+  return { normalize, readNumbers, picture, recognize, analyzeFrame, resolveEvidence, createRecognizer, detectPrintingStar, applyStarEvidence };
 })();

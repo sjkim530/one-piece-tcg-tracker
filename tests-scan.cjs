@@ -6,7 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ctx = vm.createContext({ console });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'card-scan.js'), 'utf8') + '\nglobalThis.scan = OQ_SCAN;', ctx);
-const { analyzeFrame, createCaptureGate } = ctx.scan;
+const { analyzeFrame } = ctx.scan;
 
 function image(paint) {
   const width = 180, height = 252, data = new Uint8ClampedArray(width * height * 4);
@@ -23,7 +23,7 @@ const quality = () => analyzeFrame(card);
 
 const catalog = [
   { id: '1', card_name: 'Kuro', card_set_id: 'OP15-025', power: '6000', rulesText: 'Rest an opponent character. East Blue pirates.', set_name: 'Adventure' },
-  { id: '2', card_name: 'Kuro (025) (Alternate Art)', card_set_id: 'OP15-025', power: '6000', rulesText: 'Rest an opponent character. East Blue pirates.', set_name: 'Adventure' },
+  { id: '2', star: true, card_name: 'Kuro (025) (Alternate Art)', card_set_id: 'OP15-025', power: '6000', rulesText: 'Rest an opponent character. East Blue pirates.', set_name: 'Adventure' },
   { id: '3', card_name: 'Jango', card_set_id: 'OP15-026', power: '2000', set_name: 'Adventure' }
 ];
 const evidence = text => ctx.scan.resolveEvidence(text, { cards: catalog });
@@ -72,27 +72,72 @@ test('name evidence retains every ranked candidate beyond the first page', () =>
   assert.equal(result.totalCandidates, 55); assert.equal(result.candidates.length, 55);
   assert.equal(result.candidates[54].id, '55');
 });
-for (const cadence of [160, 400, 600]) {
-  test(`steady ${cadence}ms preview requires sustained independent samples`, () => {
-    const gate = createCaptureGate(), q = quality(), events = [];
-    for (let t = 0; t <= 6000; t += cadence) if (gate.update(q, t).capture) events.push(t);
-    assert.equal(events.length, 1); assert.ok(events[0] >= Math.max(800, cadence * 5));
+function starFixture(kind, centerY = 67) {
+  const vertices = Array.from({ length: 10 }, (_, i) => {
+    const angle = i * Math.PI / 5 - Math.PI / 2, radius = i % 2 ? 3 : 7;
+    return [135 + Math.cos(angle) * radius, centerY + Math.sin(angle) * radius];
+  });
+  const pixels = image((x, y) => {
+    if (kind === 'circle') return Math.hypot(x - 135, y - centerY) < 7 ? 220 : 28;
+    if (kind === 'regular') return x >= 132 && x <= 136 && y >= centerY - 7 && y <= centerY + 7 ? 220 : 28;
+    if (kind !== 'star') return 28;
+    let inside = false;
+    for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+      const [ax, ay] = vertices[i], [bx, by] = vertices[j];
+      if ((ay > y) !== (by > y) && x < (bx - ax) * (y - ay) / (by - ay) + ax) inside = !inside;
+    }
+    return inside ? 220 : 28;
+  });
+  return { width: pixels.width, height: pixels.height, getContext: () => ({ getImageData: () => pixels }) };
+}
+const codeBoxes = { blocks: [{ paragraphs: [{ lines: [{ words: [
+  { text: 'OP15-02588', bbox: { x0: 50, y0: 70, x1: 145, y1: 95 } }
+] }] }] }] };
+test('printing star is detected only beside a recognized code, including inside its merged word box', () => {
+  assert.equal(ctx.scan.detectPrintingStar(starFixture('star'), codeBoxes, ['OP15025']), true);
+  assert.equal(ctx.scan.detectPrintingStar(starFixture('star'), codeBoxes, []), null);
+  assert.equal(ctx.scan.detectPrintingStar(starFixture('star'), codeBoxes, ['OP15025', 'OP15026']), null);
+  assert.equal(ctx.scan.detectPrintingStar(starFixture('star', 20), codeBoxes, ['OP15025']), null);
+});
+test('printing-star anchors use canonical O/I/L digit recovery', () => {
+  for (const text of ['OPI5-O2588', 'OPL5-O2588', '0PI5-O2588']) {
+    const boxes = { words: [{ text, bbox: { x0: 50, y0: 70, x1: 145, y1: 95 } }] };
+    assert.equal(ctx.scan.readNumbers(text, new Set(['OP15025']))[0], 'OP15025');
+    assert.equal(ctx.scan.detectPrintingStar(starFixture('star'), boxes, ['OP15025']), true);
+  }
+});
+test('printing-star anchors reject unrelated or malformed leading text', () => {
+  for (const text of ['art OP15-02588', 'OP15-02688', 'OP15025000 OP15-02588', '★ OP15-02588']) {
+    const boxes = { words: [{ text, bbox: { x0: 50, y0: 70, x1: 145, y1: 95 } }] };
+    assert.equal(ctx.scan.detectPrintingStar(starFixture('star'), boxes, ['OP15025']), null);
+  }
+});
+for (const kind of ['regular', 'circle', 'none']) {
+  test(`regular/no-star code-adjacent fixture stays unknown (${kind})`, () => {
+    assert.equal(ctx.scan.detectPrintingStar(starFixture(kind), codeBoxes, ['OP15025']), null);
   });
 }
-test('movement, bad exposure and long interruptions reset readiness', () => {
-  const gate = createCaptureGate(), q = quality();
-  for (let t = 0; t <= 640; t += 160) gate.update(q, t);
-  assert.equal(gate.update({ ...q, fingerprint: q.fingerprint.map(x => x + 25) }, 800).state, 'moving');
-  assert.equal(gate.update(q, 960).capture, false);
-  assert.equal(gate.update(q, 4000).capture, false);
-  assert.equal(gate.update({ ...q, state: 'dark', message: 'Add light' }, 4160).capture, false);
+test('decorative Unicode stars in unrelated OCR text never mark the printing', () => {
+  assert.equal(evidence('★ artwork decoration\nOP15-025').starred, null);
 });
-
-function cameraHarness({ contextUnavailable = false, frameError = false, noMatch = false, text = 'OP15-025', refineText = text, deferProbe = false, cards = catalog } = {}) {
+test('positive printing star excludes regular but preserves every compatible alternate printing', () => {
+  const cards = [...catalog, { ...catalog[1], id: '4', card_name: 'Kuro (Manga)' }];
+  const result = ctx.scan.resolveEvidence('OP15-025', { cards });
+  const filtered = ctx.scan.applyStarEvidence(result, true, { cards, isStarred: card => !!card.star });
+  assert.equal(filtered.starred, true);
+  assert.deepEqual(Array.from(filtered.candidates.map(card => card.id)), ['2', '4']);
+  assert.equal(filtered.totalCandidates, 2);
+  const unknown = ctx.scan.applyStarEvidence(result, null, { cards, isStarred: card => !!card.star });
+  assert.equal(unknown.starred, null); assert.equal(unknown.candidates.length, 3);
+  const mixed = ctx.scan.applyStarEvidence(ctx.scan.resolveEvidence('OP15-025 OP15-026', { cards }), true,
+    { cards, isStarred: card => !!card.star });
+  assert.equal(mixed.starred, null); assert.equal(mixed.candidates.length, 4);
+});
+function cameraHarness({ contextUnavailable = false, frameError = false, noMatch = false, text = 'OP15-025', refineText = text, deferProbe = false, cards = catalog, probeTexts } = {}) {
   let now = 0, timerId = 0, scans = 0, stops = 0, cameraResolve, probes = 0, sessions = 0, pendingProbe;
   const timers = new Map(), nodes = new Map(), regions = [];
   const matchEvidence = text => ctx.scan.resolveEvidence(text, { cards });
-  let previewImage = card;
+  let previewImage = card, sceneStep = 0;
   function element() {
     const handlers = {};
     return { hidden: false, disabled: false, checked: true, value: '', textContent: '', innerHTML: '',
@@ -123,11 +168,12 @@ function cameraHarness({ contextUnavailable = false, frameError = false, noMatch
         close() {},
         async recognize(frame, settings = {}) {
           if (settings.probe) probes++;
+          const probeText = probeTexts?.[Math.min(probes - 1, probeTexts.length - 1)] ?? text;
           if (deferProbe) return new Promise((resolve, reject) => {
-            pendingProbe = () => resolve(matchEvidence(noMatch ? '' : text));
+            pendingProbe = () => resolve(matchEvidence(noMatch ? '' : probeText));
             signal.addEventListener('abort', () => reject(Error('Cancelled')), { once: true });
           });
-          return matchEvidence(noMatch ? '' : settings.probe ? text : refineText);
+          return matchEvidence(noMatch ? '' : settings.probe ? probeText : refineText);
         }
       }; }
     }, S: { cards }, E: { cardKey: card => card.id, rarityBadge: card => ({ label: 'Rare', star: !!card.star }) },
@@ -147,7 +193,7 @@ function cameraHarness({ contextUnavailable = false, frameError = false, noMatch
     await flush();
   }
   return { $, document, window, stream, openCamera, tick, timers, regions, flush,
-    changeScene: () => { previewImage = image((x, y) => (within(x, y) ? detail(x, y) : 28) + 25); },
+    changeScene: () => { sceneStep = sceneStep ? 0 : 25; previewImage = image((x, y) => (within(x, y) ? detail(x, y) : 28) + sceneStep); },
     finishProbe: async () => { pendingProbe(); await flush(); }, resolveCamera: () => cameraResolve(stream),
     scans: () => scans, stops: () => stops, probes: () => probes, sessions: () => sessions };
 }
@@ -165,7 +211,7 @@ test('short catalog name can confirm across two independent probes without guess
   assert.equal(h.probes(), 2); assert.equal(h.stops(), 1);
   assert.match(h.$('#scan-status').textContent, /based on the card name/);
 });
-test('name matches paginate all candidates with accurate totals and preserve star sorting', async () => {
+test('name matches paginate all candidates and Star present filters instead of sorting', async () => {
   const h = cameraHarness({ text: 'Kuro', cards: manyCards }); await h.openCamera();
   for (let i = 0; i < 20; i++) await h.tick();
   const count = () => (h.$('#scan-results').innerHTML.match(/data-key=/g) || []).length;
@@ -173,6 +219,8 @@ test('name matches paginate all candidates with accurate totals and preserve sta
   assert.equal(h.$('#scan-more').hidden, false);
   h.$('#scan-star').checked = true; await h.$('#scan-star').emit('change');
   assert.match(h.$('#scan-results').innerHTML, /data-key="55"/);
+  assert.equal(count(), 1); assert.equal(h.$('#scan-more').hidden, true);
+  h.$('#scan-star').checked = false; await h.$('#scan-star').emit('change');
   await h.$('#scan-more').emit('click');
   assert.equal(count(), 48); assert.match(h.$('#scan-status').textContent, /Showing 48 of 55/);
   await h.$('#scan-more').emit('click');
@@ -198,14 +246,14 @@ for (const refineText of ['Kuro\nJango', 'Jango']) {
     for (let i = 0; i < 20; i++) await h.tick();
     assert.ok(h.probes() >= 2); assert.equal(h.stops(), 0);
     assert.equal(h.$('#scan-controls').hidden, false);
-    assert.match(h.$('#scan-quality').textContent, /Could not confirm|Hold steady/);
+    assert.match(h.$('#scan-quality').textContent, /Could not confirm|Looking for/);
   });
 }
 test('no match keeps camera running and bounds OCR probe rate', async () => {
   const h = cameraHarness({ noMatch: true }); await h.openCamera();
   for (let i = 0; i < 60; i++) await h.tick();
   assert.ok(h.probes() >= 2 && h.probes() <= 6, 'probe count ' + h.probes()); assert.equal(h.stops(), 0);
-  assert.match(h.$('#scan-quality').textContent, /No match|Hold steady/);
+  assert.match(h.$('#scan-quality').textContent, /No match|Looking for/);
 });
 test('conflicting names and unknown numbers never auto commit', async () => {
   for (const text of ['Kuro\nJango', 'OP99-999\nKuro']) {
@@ -222,12 +270,18 @@ test('only one OCR probe is in flight and manual capture cancels it', async () =
   assert.equal(h.stops(), 1); assert.equal(h.scans(), 1); assert.equal(h.timers.size, 0);
   await h.finishProbe(); assert.equal(h.stops(), 1);
 });
-test('movement during a pending OCR probe invalidates its match', async () => {
-  const h = cameraHarness({ deferProbe: true }); await h.openCamera();
-  for (let i = 0; i < 10; i++) await h.tick();
-  assert.equal(h.probes(), 1); h.changeScene(); await h.tick();
-  await h.finishProbe(); assert.equal(h.stops(), 0);
-  assert.equal(h.$('#scan-controls').hidden, false);
+test('normal handheld jitter does not block matching or auto capture', async () => {
+  const h = cameraHarness(); await h.openCamera();
+  for (let i = 0; i < 20; i++) { h.changeScene(); await h.tick(); }
+  assert.equal(h.probes(), 2); assert.equal(h.stops(), 1);
+});
+test('a new OCR identity must receive its own second observation', async () => {
+  const h = cameraHarness({ probeTexts: ['OP15-025', 'OP15-026', 'OP15-026'], refineText: 'OP15-026' });
+  await h.openCamera();
+  for (let i = 0; i < 4; i++) { h.changeScene(); await h.tick(); }
+  assert.equal(h.probes(), 2); assert.equal(h.stops(), 0);
+  for (let i = 0; i < 8; i++) { h.changeScene(); await h.tick(); }
+  assert.equal(h.probes(), 3); assert.equal(h.stops(), 1);
 });
 test('manual full-frame capture works with automatic disabled', async () => {
   const h = cameraHarness(); h.$('#scan-auto').checked = false; await h.openCamera();
@@ -256,7 +310,8 @@ test('video warming and frozen-frame diagnostics remain visible', async () => {
   assert.match(h.$('#scan-quality').textContent, /No camera frames/);
   video.readyState = 2; await h.tick();
   for (let i = 0; i < 15; i++) await h.tick(160, false);
-  assert.match(h.$('#scan-quality').textContent, /preview paused/); assert.equal(h.probes(), 0);
+  assert.match(h.$('#scan-quality').textContent, /preview paused/); assert.equal(h.probes(), 1);
+  assert.equal(h.stops(), 0);
 });
 for (const failure of [{ contextUnavailable: true }, { frameError: true }]) {
   test('analysis failure leaves full-frame manual fallback ' + Object.keys(failure)[0], async () => {

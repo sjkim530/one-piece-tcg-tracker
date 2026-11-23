@@ -3747,13 +3747,12 @@
     const more = $('#scan-more');
     let matchLimit = 24;
     const quality = $('#scan-quality'), automatic = $('#scan-auto');
-    const gate = OQ_SCAN.createCaptureGate();
     const sample = document.createElement('canvas');
     let sampleContext;
     try { sampleContext = sample.getContext('2d', { willReadFrequently: true }); } catch (_) { /* Manual capture remains available. */ }
     let stream, job, cameraRequest, previewTimer, recognizer, probeController, probeTask;
     let cameraSession = 0, capturing = false, previewStartedAt = 0;
-    let lastVideoTime, lastFrameAt = 0, nextProbeAt = 0, motionEpoch = 0;
+    let lastVideoTime, lastFrameAt = 0, nextProbeAt = 0;
     let previousMatch = null, analysisUnavailable = false, recognized = null;
 
     function cameraMode(active) {
@@ -3767,7 +3766,7 @@
       clearTimeout(previewTimer); previewTimer = null;
       probeController?.abort(); recognizer?.close();
       recognizer = probeController = probeTask = null;
-      gate.reset(); previousMatch = null; lastVideoTime = undefined;
+      previousMatch = null; lastVideoTime = undefined;
       sample.width = sample.height = 0;
       cameraRequest = null;
       stream?.getTracks().forEach(track => track.stop());
@@ -3790,10 +3789,10 @@
       const keys = new Set(evidence.numbers.map(OQ_SCAN.normalize));
       const ids = new Set((evidence.candidates || []).map(candidate => String(candidate.id)));
       const ranking = new Map((evidence.candidates || []).map((candidate, i) => [String(candidate.id), i]));
-      const matches = S.cards.filter(card => keys.size ? keys.has(OQ_SCAN.normalize(card.card_set_id)) : ids.has(String(card.id)))
+      let matches = S.cards.filter(card => keys.size ? keys.has(OQ_SCAN.normalize(card.card_set_id)) : ids.has(String(card.id)))
         .map(card => ({ card, badge: E.rarityBadge(card) }));
-      matches.sort((a, b) => (star.checked ? Number(b.badge.star) - Number(a.badge.star) : 0) ||
-        (ranking.get(String(a.card.id)) ?? 0) - (ranking.get(String(b.card.id)) ?? 0));
+      if (star.checked) matches = matches.filter(match => match.badge.star);
+      matches.sort((a, b) => (ranking.get(String(a.card.id)) ?? 0) - (ranking.get(String(b.card.id)) ?? 0));
       results.innerHTML = matches.slice(0, matchLimit).map(({ card, badge }) => `
         <button class="catalog-tile" type="button" data-key="${esc(E.cardKey(card))}">
           ${cardArt(card, 'catalog-art')}
@@ -3803,12 +3802,14 @@
         </button>`).join('');
       const basis = keys.size ? (evidence.recoveredNumbers?.length ? ' Card number recovered from noisy text; check it against the card.' : '')
         : ' Matches are based on the card name; the number was not confirmed.';
+      const starNote = star.checked ? ' Star present: showing only catalog printings marked with a star.' : '';
       const unknown = !keys.size && evidence.readNumbers?.length
         ? ` Read ${evidence.readNumbers.join(', ')}, which is not in the loaded catalog.` : '';
       more.hidden = matches.length <= matchLimit;
       status.textContent = matches.length
-        ? `${matches.length > matchLimit ? 'Showing ' + matchLimit + ' of ' + matches.length : matches.length} possible ${matches.length === 1 ? 'printing' : 'printings'}. Confirm the artwork and card number.${basis}${unknown}`
-        : evidence.readNumbers?.length
+        ? `${matches.length > matchLimit ? 'Showing ' + matchLimit + ' of ' + matches.length : matches.length} possible ${matches.length === 1 ? 'printing' : 'printings'}. Confirm the artwork and card number.${basis}${unknown}${starNote}`
+        : star.checked ? 'No starred printing is marked for these matches. Clear Star present to review all possible printings.'
+          : evidence.readNumbers?.length
           ? `Read ${evidence.readNumbers.join(', ')}, but no matching card is in the loaded catalog. Check the number or refresh card data.`
           : 'No card identified yet. Try a closer, steadier view or enter the card number below.';
     }
@@ -3816,7 +3817,7 @@
       recognized = evidence;
       matchLimit = 24;
       number.value = evidence.numbers[0] || evidence.readNumbers?.[0] || '';
-      star.checked = evidence.starred;
+      star.checked = evidence.starred === true;
       showMatches(evidence);
     }
     async function scan(makeFrame) {
@@ -3830,7 +3831,7 @@
         if (task.signal.aborted) return;
         const result = await OQ_SCAN.recognize(frame, task.signal, stage => {
           if (!task.signal.aborted) status.textContent = stage === 'recognizing text' ? 'Reading card text…' : 'Loading the scanner…';
-        }, { cards: S.cards });
+        }, { cards: S.cards, isStarred: card => E.rarityBadge(card).star });
         if (!task.signal.aborted) acceptEvidence(result);
       } catch (_) {
         if (!task.signal.aborted) status.textContent = 'Could not scan this photo. Try again or enter the card number below.';
@@ -3841,7 +3842,7 @@
     }
     async function probe(session) {
       if (probeTask || !automatic.checked || !stream || !frameAvailable()) return;
-      const task = probeTask = {}, epoch = motionEpoch;
+      const task = probeTask = {};
       let frame, usedRecognizer;
       try {
         frame = fullFrame();
@@ -3849,31 +3850,36 @@
           probeController = new AbortController();
           recognizer = OQ_SCAN.createRecognizer(probeController.signal, stage => {
             if (session === cameraSession && automatic.checked) showQuality(stage === 'recognizing text'
-              ? 'Looking for a card number or name…' : 'Loading the scanner. Keep the card visible…', 'matching');
-          }, { cards: S.cards });
+              ? 'Looking for a card number or name…' : 'Loading the scanner. Keep one card visible…', 'matching');
+          }, { cards: S.cards, isStarred: card => E.rarityBadge(card).star });
         }
         usedRecognizer = recognizer;
         showQuality('Looking for a card number or name…', 'matching');
         const evidence = await usedRecognizer.recognize(frame, { probe: true });
-        if (session !== cameraSession || !dialog.open || document.hidden || !automatic.checked || epoch !== motionEpoch) return;
-        // Two separate stable camera observations must agree. OCR passes over
+        if (session !== cameraSession || !dialog.open || document.hidden || !automatic.checked) return;
+        // Two separate advancing camera observations must agree. OCR passes over
         // the same frozen frame do not count as separate observations.
         const signature = evidence.numbers.length ? 'number:' + [...evidence.numbers].sort().join(',')
           : evidence.name && !evidence.readNumbers.length ? 'name:' + evidence.name : null;
         if (signature && previousMatch === signature) {
-          let finalEvidence = evidence;
-          if (!evidence.numbers.length) {
-            showQuality('Card found. Checking its number and possible printings…', 'matching');
-            finalEvidence = await usedRecognizer.recognize(frame);
-            if (session !== cameraSession || document.hidden || !automatic.checked || epoch !== motionEpoch) return;
-            if (!finalEvidence.numbers.length && (finalEvidence.readNumbers.length || !finalEvidence.candidates.length ||
-                !finalEvidence.name || finalEvidence.name !== evidence.name)) {
-              previousMatch = null;
-              showQuality(finalEvidence.readNumbers.length
-                ? 'Card number read, but it is not in the catalog. Try Scan card to review.'
-                : 'Could not confirm the card. Keep it visible or try Scan card.', 'searching');
-              return;
-            }
+          // A high-resolution pass also checks the printing star, even when
+          // the smaller probes already read the card number.
+          showQuality('Card found. Checking its number and printing star…', 'matching');
+          const finalEvidence = await usedRecognizer.recognize(frame);
+          if (session !== cameraSession || document.hidden || !automatic.checked) return;
+          if (evidence.numbers.length && finalEvidence.numbers.length &&
+              !finalEvidence.numbers.some(code => evidence.numbers.includes(code))) {
+            previousMatch = null;
+            showQuality('A different card was read. Keep one card visible to confirm.', 'searching');
+            return;
+          }
+          if (!finalEvidence.numbers.length && (finalEvidence.readNumbers.length || !finalEvidence.candidates.length ||
+              !finalEvidence.name || finalEvidence.name !== evidence.name)) {
+            previousMatch = null;
+            showQuality(finalEvidence.readNumbers.length
+              ? 'Card number read, but it is not in the catalog. Try Scan card to review.'
+              : 'Could not confirm the card. Keep it visible or try Scan card.', 'searching');
+            return;
           }
           capturing = true;
           stopCamera(); acceptEvidence(finalEvidence); status.focus({ preventScroll: true });
@@ -3881,7 +3887,7 @@
         }
         previousMatch = signature;
         nextProbeAt = performance.now() + (signature ? 350 : 1800);
-        showQuality(signature ? 'Possible card found. Hold steady to confirm…' : evidence.readNumbers.length
+        showQuality(signature ? 'Possible card found. Keep it visible to confirm…' : evidence.readNumbers.length
           ? 'Card number read, but it is not in the catalog. Try Scan card to review.'
           : 'No match yet. Move closer or tilt to make the text clearer.', signature ? 'confirming' : 'searching');
       } catch (_) {
@@ -3892,7 +3898,7 @@
       } finally {
         if (frame) frame.width = frame.height = 0;
         if (probeTask === task) {
-          probeTask = null; gate.reset();
+          probeTask = null;
           if (nextProbeAt < performance.now()) nextProbeAt = performance.now() + 1800;
         }
       }
@@ -3901,14 +3907,14 @@
       if (session !== cameraSession || !stream || !dialog.open || document.hidden) return;
       const now = performance.now(); capture.disabled = !frameAvailable();
       if (!frameAvailable()) {
-        gate.reset(); previousMatch = null;
+        previousMatch = null;
         showQuality(now - previewStartedAt < 3000 ? 'Starting camera preview…' :
           'No camera frames yet. Cancel and reopen the camera, or choose a photo.', 'warming');
       } else if (!sampleContext || analysisUnavailable) {
         showQuality('Automatic matching unavailable · Tap Scan card when ready', 'manual');
       } else if (lastVideoTime === video.currentTime) {
         if (now - lastFrameAt > 1500) {
-          gate.reset(); previousMatch = null;
+          previousMatch = null;
           showQuality('Camera preview paused. Cancel and reopen the camera, or choose a photo.', 'warming');
         }
       } else {
@@ -3916,16 +3922,17 @@
         try {
           sample.width = 160; sample.height = Math.max(80, Math.round(160 * video.videoHeight / video.videoWidth));
           sampleContext.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, sample.width, sample.height);
-          const result = gate.update(OQ_SCAN.analyzeFrame(sampleContext.getImageData(0, 0, sample.width, sample.height)), now, automatic.checked);
-          if (result.state === 'moving' || ['dark', 'bright'].includes(result.state)) { motionEpoch++; previousMatch = null; }
-          if (!probeTask && now >= nextProbeAt) {
-            showQuality(result.message, result.state);
-            if (result.capture) probe(session);
-          } else if (result.capture && !probeTask) {
-            gate.reset();
+          const result = OQ_SCAN.analyzeFrame(sampleContext.getImageData(0, 0, sample.width, sample.height));
+          if (result.state !== 'ready') {
+            previousMatch = null;
+            if (!probeTask) showQuality(result.message, result.state);
+          } else if (!automatic.checked) {
+            showQuality('Auto capture off · Tap Scan card when ready', 'manual');
+          } else if (!probeTask && now >= nextProbeAt) {
+            probe(session);
           }
         } catch (_) {
-          analysisUnavailable = true; gate.reset();
+          analysisUnavailable = true;
           showQuality('Automatic matching unavailable · Tap Scan card when ready', 'manual');
         }
       }
@@ -3952,7 +3959,7 @@
           stopCamera(); status.textContent = 'Camera disconnected. Reopen it or choose a photo.'; status.focus();
         }, { once: true });
         cameraMode(true); previewStartedAt = lastFrameAt = performance.now();
-        nextProbeAt = 0; analysisUnavailable = false; motionEpoch = 0;
+        nextProbeAt = 0; analysisUnavailable = false;
         showQuality('Starting camera preview…', 'warming'); $('#scan-cancel-camera').focus({ preventScroll: true });
         try {
           Promise.resolve(video.play()).catch(() => {
@@ -3971,12 +3978,12 @@
       capturing = true;
       let frame;
       try { frame = fullFrame(); }
-      catch (_) { capturing = false; showQuality('Could not capture this frame. Hold steady and try Scan card.', 'manual'); return; }
+      catch (_) { capturing = false; showQuality('Could not capture this frame. Try Scan card again.', 'manual'); return; }
       stopCamera(); scan(() => frame); status.focus({ preventScroll: true });
     }
     capture.addEventListener('click', captureFrame);
     automatic.addEventListener('change', () => {
-      gate.reset(); previousMatch = null;
+      previousMatch = null;
       if (!automatic.checked) {
         probeController?.abort(); recognizer?.close(); recognizer = null; probeController = null;
         showQuality('Auto capture off · Tap Scan card when ready', 'manual');
