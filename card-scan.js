@@ -22,7 +22,7 @@ const OQ_SCAN = (() => {
 
   const normalize = value => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-  function readNumbers(text) {
+  function readNumbers(text, knownNumbers) {
     const numbers = new Set();
     const separator = String.raw`[ \t]*[-–—:·.]?[ \t]*`;
     // OCR can join the rarity box or block icon to the three-digit serial.
@@ -35,6 +35,15 @@ const OQ_SCAN = (() => {
       numbers.add(prefix.toUpperCase().replace(/^0/, 'O') + digits(set + number));
     }
     for (const [, number] of text.matchAll(promos)) numbers.add('P' + digits(number));
+    // The rarity box/block symbol can become 88 or 8N immediately after the
+    // serial. Recover only these observed suffixes and only a catalog number.
+    if (knownNumbers?.size) {
+      const glued = new RegExp(String.raw`\b([O0]P|ST|EB|PRB)${separator}([0-9OIL]{2})${separator}([0-9OIL]{3})(?:88|8N|8R|B8|BN)(?=$|[^A-Z\d])`, 'gi');
+      for (const [, prefix, set, number] of text.matchAll(glued)) {
+        const code = prefix.toUpperCase().replace(/^0/, 'O') + digits(set + number);
+        if (knownNumbers.has(code)) numbers.add(code);
+      }
+    }
     return [...numbers];
   }
 
@@ -49,71 +58,29 @@ const OQ_SCAN = (() => {
     return canvas;
   }
 
-  // A small preview sample includes a little background outside the outline.
-  // These conservative checks estimate framing/quality, not card identity or
-  // camera focus. Manual capture remains available for difficult foil/sleeves.
+  // Full-frame checks reject only gross exposure or movement. OCR, rather
+  // than an assumed card border, decides whether a card is present.
   function analyzeFrame({ data, width, height }) {
-    const gray = new Float32Array(width * height);
-    for (let i = 0; i < gray.length; i++) gray[i] = .299 * data[i * 4] + .587 * data[i * 4 + 1] + .114 * data[i * 4 + 2];
-    const at = (x, y) => gray[Math.max(0, Math.min(height - 1, y)) * width + Math.max(0, Math.min(width - 1, x))];
-    const inset = (1 - 1 / 1.12) / 2;
-    const edge = (vertical, target) => {
-      const across = vertical ? width : height, along = vertical ? height : width;
-      const lo = Math.round((target - .035) * across), hi = Math.round((target + .035) * across);
-      const rows = [];
-      for (let n = 0; n < 40; n++) {
-        const pos = Math.round((.16 + .68 * n / 39) * along);
-        const values = [];
-        for (let axis = lo; axis <= hi; axis++) {
-          const a = vertical ? at(axis - 2, pos) : at(pos, axis - 2);
-          const b = vertical ? at(axis + 2, pos) : at(pos, axis + 2);
-          values.push(b - a);
-        }
-        rows.push({ values, peak: Math.max(...values.map(Math.abs)) });
-      }
-      let best = 0;
-      for (let axis = lo; axis <= hi; axis++) {
-        let positive = 0, negative = 0;
-        for (const row of rows) {
-          const value = row.values[axis - lo];
-          if (Math.abs(value) >= 18 && Math.abs(value) >= row.peak * .7) value > 0 ? positive++ : negative++;
-        }
-        const support = (positive + negative) / rows.length;
-        const coherent = Math.max(positive, negative) / Math.max(1, positive + negative);
-        if (coherent >= .65) best = Math.max(best, support);
-      }
-      return best;
-    };
-    let light = 0, clipped = 0, detail = 0, count = 0;
-    for (let y = Math.round(height * .13); y < height * .87; y++) {
-      for (let x = Math.round(width * .13); x < width * .87; x++) {
-        const value = at(x, y);
-        light += value;
-        if (value > 246) clipped++;
-        const lap = 4 * value - at(x - 1, y) - at(x + 1, y) - at(x, y - 1) - at(x, y + 1);
-        detail += lap * lap;
-        count++;
-      }
-    }
-    const brightness = light / count, sharpness = detail / count, glare = clipped / count;
     const fingerprint = [];
+    let light = 0, count = 0;
     for (let y = 0; y < 18; y++) for (let x = 0; x < 12; x++) {
-      fingerprint.push(at(Math.round((.15 + .7 * x / 11) * width), Math.round((.15 + .7 * y / 17) * height)));
+      const px = Math.min(width - 1, Math.round((.08 + .84 * x / 11) * width));
+      const py = Math.min(height - 1, Math.round((.08 + .84 * y / 17) * height));
+      const i = 4 * (py * width + px);
+      const value = .299 * data[i] + .587 * data[i + 1] + .114 * data[i + 2];
+      fingerprint.push(value); light += value; count++;
     }
-    let state = 'ready', message = 'Hold steady';
-    if (brightness < 45) { state = 'dark'; message = 'Add more light'; }
-    else if (brightness > 230 || glare > .18) { state = 'glare'; message = 'Tilt the card to reduce bright reflections'; }
-    else if ([edge(true, inset), edge(true, 1 - inset), edge(false, inset), edge(false, 1 - inset)].some(score => score < .6)) {
-      state = 'framing'; message = 'Move closer or align all four edges with the outline';
-    } else if (sharpness < 90) { state = 'blur'; message = 'Hold steady and let the camera focus'; }
-    return { state, message, fingerprint, brightness, sharpness, glare };
+    const brightness = light / count;
+    if (brightness < 25) return { state: 'dark', message: 'Add more light so the card text is visible', fingerprint, brightness };
+    if (brightness > 248) return { state: 'bright', message: 'Reduce bright reflections so the card text is visible', fingerprint, brightness };
+    return { state: 'ready', message: 'Hold the card steady anywhere in the camera view', fingerprint, brightness };
   }
 
   function createCaptureGate() {
     let previous, since, last, frames = 0, captured = false;
     function reset() { previous = undefined; since = last = undefined; frames = 0; captured = false; }
     function update(quality, now, enabled = true) {
-      if (captured) return { capture: false, message: 'Scanning…', state: 'capturing' };
+      const hadPrevious = !!previous;
       const motion = previous && previous.length === quality.fingerprint.length
         ? quality.fingerprint.reduce((sum, value, i) => sum + Math.abs(value - previous[i]), 0) / previous.length : Infinity;
       previous = quality.fingerprint;
@@ -127,7 +94,10 @@ const OQ_SCAN = (() => {
       last = now;
       if (quality.state !== 'ready') return { capture: false, message: quality.message, state: quality.state };
       if (!enabled) return { capture: false, message: 'Auto capture off · Tap Scan card when ready', state: 'manual' };
-      if (motion > 6) return { capture: false, message: 'Hold steady', state: 'moving' };
+      if (motion > 6) return { capture: false, message: 'Hold steady', state: hadPrevious ? 'moving' : 'steady' };
+      // Keep tracking motion while an OCR probe is running. Readiness is
+      // latched, but movement must still invalidate that probe's evidence.
+      if (captured) return { capture: false, message: 'Scanning…', state: 'capturing' };
       if (!fresh) return { capture: false, message: 'Hold steady · Getting ready to scan', state: 'steady' };
       if (since == null) since = now;
       frames++;
@@ -199,80 +169,130 @@ const OQ_SCAN = (() => {
     ctx.putImageData(image, 0, 0);
   }
 
-  async function recognize(frame, signal, progress, { photo = false, knownNumbers } = {}) {
-    let worker;
-    let timer;
-    let abort;
-    const interrupted = new Promise((_, reject) => {
-      abort = () => reject(new DOMException('Scan cancelled', 'AbortError'));
-      signal.addEventListener('abort', abort, { once: true });
-      timer = setTimeout(() => reject(new Error('Scan timed out')), 65000);
-    });
-    let stopped = false;
-    interrupted.catch(() => {});
-    const race = task => Promise.race([task, interrupted]);
-    try {
-      if (signal.aborted) throw signal.reason;
-      const ocr = await race(loadOCR());
-      worker = await race(new Promise((resolve, reject) => {
-        ocr.createWorker('eng', 1, {
-          workerPath: runtime + 'worker.min.js',
-          corePath: cdn + 'tesseract.js-core@6.0.0',
-          langPath: cdn + '@tesseract.js-data/eng@1.0.0/4.0.0_best_int',
-          logger: message => { if (!stopped) progress(message.status); },
-          errorHandler: reject
-        }).then(instance => {
-          if (stopped) instance.terminate();
-          else resolve(instance);
-        }, reject);
-      }));
-      const footer = [.52, .84, .47, .155];
-      const portraitPhoto = [.58, .745, .27, .08];
-      const broadCorner = [.38, .63, .61, .36];
-      const crops = photo ? [portraitPhoto, footer, broadCorner] : [footer, broadCorner];
-      async function match(canvas) {
-        const { data } = await race(worker.recognize(canvas, { tessedit_pageseg_mode: '11' }));
-        const numbers = readNumbers(data.text).filter(number => !knownNumbers || knownNumbers.has(number));
-        return { numbers, starred: /[★☆✦]/u.test(data.text) };
+  const textWords = value => String(value || '').normalize('NFKD').toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ').trim();
+  const baseName = value => textWords(String(value || '').replace(/\([^)]*\)/g, '')
+    .replace(/\s*-\s*(?:OP|ST|EB|PRB)\d{2}-\d{3}.*$/i, ''));
+
+  function resolveEvidence(text, { cards = [], knownNumbers } = {}) {
+    const known = knownNumbers || new Set(cards.map(card => normalize(card.card_set_id)));
+    const read = readNumbers(text, known);
+    const numbers = read.filter(number => !known.size || known.has(number));
+    const all = textWords(text), padded = ' ' + all + ' ';
+    const lines = String(text).split(/[\r\n]+/).map(textWords);
+    let candidates = [];
+    if (numbers.length) {
+      candidates = cards.filter(card => numbers.includes(normalize(card.card_set_id)))
+        .map(card => ({ id: String(card.id), name: baseName(card.card_name), strong: true, score: 100 }));
+    } else {
+      for (const card of cards) {
+        const name = baseName(card.card_name);
+        if (name.length < 3 || !padded.includes(' ' + name + ' ')) continue;
+        const exactLine = lines.includes(name);
+        // Short names must be actual OCR lines, never mentions in another
+        // card's rules. Two independent probes can confirm a weaker name.
+        if ((name.length <= 5 || !name.includes(' ')) && !exactLine) continue;
+        const power = String(card.power || '').replace(/[^0-9]/g, '');
+        const powerMatch = power.length >= 4 && padded.includes(' ' + power + ' ');
+        const ruleWords = [...new Set(textWords(card.rulesText).split(' ').filter(word => word.length >= 5))];
+        const ruleHits = ruleWords.filter(word => padded.includes(' ' + word + ' ')).length;
+        const cardContext = /\b(?:CHARACTER|LEADER|STAGE|EVENT|COUNTER|ON PLAY|YOUR TURN)\b/.test(all);
+        const strong = exactLine && (powerMatch || (cardContext && ruleHits >= 2));
+        candidates.push({ id: String(card.id), name, strong, score: (exactLine ? 20 : 5) + (strong ? 30 : 0) + Math.min(5, ruleHits) });
       }
-      function finish(result) {
-        if (result.starred || !result.numbers.length) return result;
-        if (!photo) return { ...result, starred: hasStar(frame) };
-        const sample = picture(frame, frame, [0, 0, 1, 1], Math.min(1, 1600 / Math.max(frame.width, frame.height)));
-        try {
-          return { ...result, starred: hasStar(sample) };
-        } finally {
-          sample.width = sample.height = 0;
-        }
-      }
-      for (const [i, region] of crops.entries()) {
-        const scale = Math.min(3, 1050 / (frame.width * region[2]));
-        const crop = picture(frame, frame, region, scale);
-        try {
-          const result = await match(crop);
-          if (result.numbers.length) return finish(result);
-          if (i < crops.length - 1) {
-            boostNumberContrast(crop);
-            const enhanced = await match(crop);
-            if (enhanced.numbers.length) return finish(enhanced);
-          }
-        } finally {
-          crop.width = crop.height = 0;
-        }
-      }
-      const full = picture(frame, frame, [0, 0, 1, 1], Math.min(1, 1800 / Math.max(frame.width, frame.height)));
-      try {
-        return finish(await match(full));
-      } finally {
-        full.width = full.height = 0;
-      }
-    } finally {
-      stopped = true;
-      clearTimeout(timer);
-      signal.removeEventListener('abort', abort);
-      await worker?.terminate();
+      candidates.sort((a, b) => b.score - a.score);
     }
+    const names = [...new Set(candidates.map(candidate => candidate.name))];
+    return { numbers, readNumbers: read, candidates, totalCandidates: candidates.length,
+      recoveredNumbers: numbers.filter(number => !readNumbers(text).includes(number)),
+      name: names.length === 1 ? names[0] : null,
+      strongName: names.length === 1 && candidates.some(candidate => candidate.strong),
+      starred: /[★☆✦]/u.test(text) };
   }
 
-  return { normalize, readNumbers, picture, recognize, analyzeFrame, createCaptureGate };
+  function createRecognizer(signal, progress = () => {}, options = {}) {
+    let worker, starting, closed = false, busy = false, rejectCancelled;
+    const cancelled = new Promise((_, reject) => { rejectCancelled = reject; });
+    cancelled.catch(() => {});
+    function close() {
+      if (closed) return;
+      closed = true;
+      signal.removeEventListener('abort', close);
+      rejectCancelled(new DOMException('Scan cancelled', 'AbortError'));
+      if (worker) Promise.resolve(worker.terminate()).catch(() => {});
+    }
+    signal.addEventListener('abort', close, { once: true });
+    if (signal.aborted) close();
+    const race = task => Promise.race([task, cancelled]);
+    async function getWorker() {
+      if (!starting) starting = (async () => {
+        const ocr = await race(loadOCR());
+        const next = await ocr.createWorker('eng', 1, {
+          workerPath: runtime + 'worker.min.js', corePath: cdn + 'tesseract.js-core@6.0.0',
+          langPath: cdn + '@tesseract.js-data/eng@1.0.0/4.0.0_best_int',
+          logger: message => { if (!closed) progress(message.status); }
+        });
+        if (closed) { await next.terminate(); throw new DOMException('Scan cancelled', 'AbortError'); }
+        worker = next;
+        return worker;
+      })();
+      return race(starting);
+    }
+    async function recognize(frame, { probe = false } = {}) {
+      if (closed) throw new DOMException('Scan cancelled', 'AbortError');
+      if (busy) throw new Error('A scan is already running');
+      busy = true;
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => { reject(new Error('Scan timed out')); close(); }, 65000);
+      });
+      const run = task => Promise.race([race(task), timeout]);
+      let text = '';
+      try {
+        const ocr = await run(getWorker());
+        // Full-frame first finds names wherever the card lies. Overlapping
+        // tiles then magnify small card numbers without assuming card edges.
+        const regions = probe ? [
+          [[0, 0, 1, 1], 1400, '11'], [[0, 0, 1, .6], 1800, '11'], [[0, .4, 1, .6], 1800, '11']
+        ] : [
+          [[0, 0, 1, 1], 1800, '11'], [[0, 0, 1, .6], 2100, '11'], [[0, .4, 1, .6], 2100, '11'],
+          [[0, .65, 1, .35], 2400, '6'], [[.35, .45, .65, .55], 1800, '11'],
+          [[0, 0, 1, 1], 1800, '6']
+        ];
+        let evidence = resolveEvidence('', options);
+        for (let i = 0; i < regions.length; i++) {
+          const [region, maxSide, mode] = regions[i];
+          const scale = Math.min(3, maxSide / Math.max(frame.width * region[2], frame.height * region[3]));
+          const crop = picture(frame, frame, region, scale);
+          try {
+            await run(ocr.setParameters({ tessedit_pageseg_mode: mode, preserve_interword_spaces: '1' }));
+            const result = await run(ocr.recognize(crop));
+            text += '\n' + result.data.text;
+            evidence = resolveEvidence(text, options);
+            if (evidence.numbers.length || (probe && evidence.name && evidence.strongName)) return evidence;
+            if (!probe && i > 0 && !evidence.numbers.length) {
+              boostNumberContrast(crop);
+              const enhanced = await run(ocr.recognize(crop));
+              text += '\n' + enhanced.data.text;
+              evidence = resolveEvidence(text, options);
+              if (evidence.numbers.length) return evidence;
+            }
+          } finally { crop.width = crop.height = 0; }
+        }
+        return evidence;
+      } finally {
+        clearTimeout(timer);
+        busy = false;
+      }
+    }
+    return { recognize, close };
+  }
+
+  async function recognize(frame, signal, progress, options = {}) {
+    const session = createRecognizer(signal, progress, options);
+    try { return await session.recognize(frame); }
+    finally { session.close(); }
+  }
+
+  return { normalize, readNumbers, picture, recognize, analyzeFrame, createCaptureGate, resolveEvidence, createRecognizer };
 })();

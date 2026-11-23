@@ -41,7 +41,7 @@
 <link rel="apple-touch-icon" href="icons/vault-192.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/vault-192.png">
 
-<link rel="stylesheet" href="styles.css?v=3.7.10">
+<link rel="stylesheet" href="styles.css?v=3.8.0">
 </head>
 <body>
 
@@ -147,10 +147,9 @@
         <p class="scan-quality" id="scan-quality" role="status" aria-live="polite" hidden>Starting camera preview…</p>
         <div class="scan-viewfinder" id="scan-viewfinder" hidden>
           <video id="scan-video" autoplay playsinline muted aria-label="Camera preview"></video>
-          <span class="scan-guide" id="scan-guide" aria-hidden="true" hidden></span>
         </div>
         <div id="scan-entry">
-          <p class="small muted scan-privacy">Photos are scanned on your device and discarded.</p>
+          <p class="small muted scan-privacy">Show one whole card anywhere in the camera view. Photos are scanned on your device and discarded. Confirm the exact artwork from the matches.</p>
           <p id="scan-status" class="small" role="status" tabindex="-1"></p>
           <form id="scan-lookup" class="scan-lookup">
             <label class="fld"><span>Card number</span><input id="scan-number" type="text" placeholder="OP01-120" autocomplete="off" autocapitalize="characters" enterkeyhint="search" spellcheck="false" required></label>
@@ -158,6 +157,7 @@
           </form>
           <label class="scan-star"><input type="checkbox" id="scan-star"> Show starred printings first</label>
           <div id="scan-results" class="catalog-grid" aria-label="Matching printings"></div>
+          <button class="btn catalog-more" id="scan-more" type="button" hidden>Show more matches</button>
         </div>
       </div>
       <div class="scan-footer">
@@ -668,8 +668,8 @@ if ('serviceWorker' in navigator) {
 <script src="source.js?v=3.7.6"></script>
 <script src="price-history.js?v=3.7.2"></script>
 <script src="market-analysis.js?v=3.7.0"></script>
-<script src="card-scan.js?v=3.7.10"></script>
+<script src="card-scan.js?v=3.8.0"></script>
 <script src="backup.js?v=3.5.0"></script>
-<script src="app.js?v=3.7.10"></script>
+<script src="app.js?v=3.8.0"></script>
 </body>
 </html>
