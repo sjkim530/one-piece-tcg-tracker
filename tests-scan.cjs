@@ -63,6 +63,16 @@ test('conflicting exact names do not produce one auto-confirmable name', () => {
   const result = evidence('Kuro\nJango');
   assert.equal(result.name, null); assert.equal(result.candidates.length, 3);
 });
+test('exact card nameplate outranks generic DON card mentions in rules text', () => {
+  const cards = [
+    { id: 'moby1', card_name: 'Moby Dick', card_set_id: 'OP16-021' },
+    { id: 'moby2', card_name: 'Moby Dick (Alternate Art)', card_set_id: 'OP16-021' },
+    ...Array.from({ length: 6 }, (_, i) => ({ id: 'don' + i, card_name: 'DON!! Card (Special ' + i + ')' }))
+  ];
+  const result = ctx.scan.resolveEvidence('Moby Dick\nRest one DON!! card\nSTAGE', { cards });
+  assert.equal(result.name, 'MOBY DICK');
+  assert.deepEqual(Array.from(result.candidates.map(card => card.id)), ['moby1', 'moby2']);
+});
 test('no card text yields no catalog candidates', () => {
   assert.equal(evidence('desk monitor keyboard').candidates.length, 0);
 });
@@ -133,9 +143,9 @@ test('positive printing star excludes regular but preserves every compatible alt
     { cards, isStarred: card => !!card.star });
   assert.equal(mixed.starred, null); assert.equal(mixed.candidates.length, 4);
 });
-function cameraHarness({ contextUnavailable = false, frameError = false, noMatch = false, text = 'OP15-025', refineText = text, deferProbe = false, cards = catalog, probeTexts } = {}) {
+function cameraHarness({ contextUnavailable = false, frameError = false, noMatch = false, text = 'OP15-025', refineText = text, deferProbe = false, cards = catalog, probeTexts, maskedName = false } = {}) {
   let now = 0, timerId = 0, scans = 0, stops = 0, cameraResolve, probes = 0, sessions = 0, pendingProbe;
-  const timers = new Map(), nodes = new Map(), regions = [];
+  const timers = new Map(), nodes = new Map(), regions = [], recognitionCalls = [];
   const matchEvidence = text => ctx.scan.resolveEvidence(text, { cards });
   let previewImage = card, sceneStep = 0;
   function element() {
@@ -167,13 +177,16 @@ function cameraHarness({ contextUnavailable = false, frameError = false, noMatch
       createRecognizer(signal) { sessions++; return {
         close() {},
         async recognize(frame, settings = {}) {
-          if (settings.probe) probes++;
+          recognitionCalls.push({ ...settings });
+          if (settings.probe && !settings.confirm) probes++;
           const probeText = probeTexts?.[Math.min(probes - 1, probeTexts.length - 1)] ?? text;
           if (deferProbe) return new Promise((resolve, reject) => {
             pendingProbe = () => resolve(matchEvidence(noMatch ? '' : probeText));
             signal.addEventListener('abort', () => reject(Error('Cancelled')), { once: true });
           });
-          return matchEvidence(noMatch ? '' : settings.probe ? probeText : refineText);
+          const result = matchEvidence(noMatch ? '' : settings.probe && !settings.confirm ? probeText : refineText);
+          result.enhanced = !!(maskedName || settings.enhanced);
+          return result;
         }
       }; }
     }, S: { cards }, E: { cardKey: card => card.id, rarityBadge: card => ({ label: 'Rare', star: !!card.star }) },
@@ -192,7 +205,7 @@ function cameraHarness({ contextUnavailable = false, frameError = false, noMatch
     for (const callback of callbacks) callback();
     await flush();
   }
-  return { $, document, window, stream, openCamera, tick, timers, regions, flush,
+  return { $, document, window, stream, openCamera, tick, timers, regions, recognitionCalls, flush,
     changeScene: () => { sceneStep = sceneStep ? 0 : 25; previewImage = image((x, y) => (within(x, y) ? detail(x, y) : 28) + sceneStep); },
     finishProbe: async () => { pendingProbe(); await flush(); }, resolveCamera: () => cameraResolve(stream),
     scans: () => scans, stops: () => stops, probes: () => probes, sessions: () => sessions };
@@ -249,11 +262,53 @@ for (const refineText of ['Kuro\nJango', 'Jango']) {
     assert.match(h.$('#scan-quality').textContent, /Could not confirm|Looking for/);
   });
 }
-test('no match keeps camera running and bounds OCR probe rate', async () => {
+test('failed automatic scans escalate then pause with an actionable manual fallback', async () => {
   const h = cameraHarness({ noMatch: true }); await h.openCamera();
   for (let i = 0; i < 60; i++) await h.tick();
-  assert.ok(h.probes() >= 2 && h.probes() <= 6, 'probe count ' + h.probes()); assert.equal(h.stops(), 0);
-  assert.match(h.$('#scan-quality').textContent, /No match|Looking for/);
+  assert.equal(h.probes(), 4); assert.equal(h.stops(), 0);
+  assert.deepEqual(h.recognitionCalls.map(call => call.enhanced), [false, false, true, true]);
+  assert.equal(h.$('#scan-auto').checked, false);
+  assert.match(h.$('#scan-quality').textContent, /Could not identify.*enable Auto capture.*Scan card/);
+  for (let i = 0; i < 20; i++) await h.tick();
+  assert.equal(h.probes(), 4);
+  h.$('#scan-auto').checked = true; await h.$('#scan-auto').emit('change'); await h.tick();
+  assert.equal(h.probes(), 5);
+});
+test('two foil-enhanced name observations avoid the redundant slow final pipeline', async () => {
+  const h = cameraHarness({ text: 'Kuro', maskedName: true }); await h.openCamera();
+  for (let i = 0; i < 20; i++) await h.tick();
+  assert.equal(h.probes(), 2); assert.equal(h.recognitionCalls.length, 2);
+  assert.equal(h.stops(), 1);
+  assert.match(h.$('#scan-status').textContent, /based on the card name/);
+});
+test('a successful detailed fallback stays detailed for its independent confirmation', async () => {
+  const h = cameraHarness({ text: 'Kuro', probeTexts: ['', '', 'Kuro', 'Kuro'] }); await h.openCamera();
+  for (let i = 0; i < 60; i++) await h.tick();
+  assert.deepEqual(h.recognitionCalls.map(call => call.enhanced), [false, false, true, true]);
+  assert.equal(h.probes(), 4); assert.equal(h.stops(), 1);
+});
+test('slow in-flight scanning exposes elapsed guidance while manual capture remains available', async () => {
+  const h = cameraHarness({ deferProbe: true }); await h.openCamera();
+  await h.tick(6000);
+  assert.match(h.$('#scan-quality').textContent, /Still reading.*Scan card/);
+  assert.equal(h.$('#scan-capture').disabled, false);
+  await h.tick(5000);
+  assert.match(h.$('#scan-quality').textContent, /taking longer.*Scan card/);
+  assert.equal(h.probes(), 1);
+  await h.$('#scan-capture').emit('click'); await h.flush();
+  assert.equal(h.scans(), 1); assert.equal(h.stops(), 1);
+});
+test('overall automatic budget pauses retries even when each individual probe is below its deadline', async () => {
+  const h = cameraHarness({ deferProbe: true, noMatch: true }); await h.openCamera();
+  await h.tick(11000); await h.finishProbe();
+  await h.tick(2000); assert.equal(h.probes(), 2);
+  await h.tick(8000);
+  assert.equal(h.$('#scan-auto').checked, false); assert.equal(h.stops(), 0);
+  assert.match(h.$('#scan-quality').textContent, /paused after 20 seconds.*Scan card/);
+  await h.finishProbe(); await h.tick();
+  assert.equal(h.probes(), 2);
+  assert.match(h.$('#scan-quality').textContent, /paused after 20 seconds/);
+  assert.equal(h.$('#scan-capture').disabled, false);
 });
 test('conflicting names and unknown numbers never auto commit', async () => {
   for (const text of ['Kuro\nJango', 'OP99-999\nKuro']) {
@@ -330,12 +385,15 @@ test('late playback failure cannot disrupt newer camera session', async () => {
   assert.equal(h.stops(), 1); assert.equal(h.$('#scan-controls').hidden, false);
 });
 
-function recognizerHarness({ text = 'OP15-025', delayStart = false, delayOCR = false } = {}) {
-  let created = 0, terminated = 0, resolveStart, resolveOCR;
+function recognizerHarness({ text = 'OP15-025', texts, delayStart = false, delayOCR = false } = {}) {
+  let created = 0, terminated = 0, resolveStart, resolveOCR, reads = 0;
   const modes = [], draws = [];
   const worker = {
     setParameters: async values => modes.push(values.tessedit_pageseg_mode),
-    recognize: async () => delayOCR ? new Promise(resolve => { resolveOCR = () => resolve({ data: { text } }); }) : { data: { text } },
+    recognize: async () => {
+      const result = texts?.[Math.min(reads++, texts.length - 1)] ?? text;
+      return delayOCR ? new Promise(resolve => { resolveOCR = () => resolve({ data: { text: result } }); }) : { data: { text: result } };
+    },
     terminate: async () => { terminated++; }
   };
   const document = { createElement: () => ({ width: 0, height: 0, getContext: () => ({
@@ -361,6 +419,35 @@ test('actual recognizer reuses one worker across probes and sets segmentation vi
   assert.equal(first.numbers[0], 'OP15025'); assert.equal(second.numbers[0], 'OP15025');
   assert.equal(h.created(), 1); assert.deepEqual(h.modes, ['11', '11']);
   h.session.close(); await h.flush(); assert.equal(h.terminated(), 1);
+});
+test('foil text mask separates warm letters without turning blue artwork or gray into text', () => {
+  const data = new Uint8ClampedArray([150, 160, 60, 255, 30, 80, 180, 255, 130, 130, 130, 255]);
+  const canvas = { width: 3, height: 1, getContext: () => ({ getImageData: () => ({ data }), putImageData() {} }) };
+  ctx.scan.maskFoilText(canvas);
+  assert.deepEqual([...data], [0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255]);
+});
+for (const probe of [false, true]) {
+  test(`foil name recovery is an early whole-frame second OCR view (${probe ? 'camera' : 'photo'})`, async () => {
+    const h = recognizerHarness({ texts: ['', 'Kuro'] }), frame = { width: 1000, height: 1500 };
+    const result = await h.session.recognize(frame, { probe }); h.session.close();
+    assert.equal(result.name, 'KURO'); assert.equal(result.enhanced, true);
+    assert.deepEqual(h.modes, ['11', '11']);
+    assert.equal(result.candidates.length, 2);
+    assert.equal(h.draws[0][1], 0); assert.equal(h.draws[0][2], 0);
+    assert.equal(h.draws[1][1], 0); assert.equal(h.draws[1][2], 0);
+  });
+}
+test('quick no-match camera attempt uses at most two OCR views before returning for guidance', async () => {
+  const h = recognizerHarness({ text: '' });
+  const result = await h.session.recognize({ width: 1000, height: 1500 }, { probe: true }); h.session.close();
+  assert.equal(result.candidates.length, 0); assert.equal(h.modes.length, 2);
+});
+test('bounded confirmation tries a magnified code view before returning a name-only result', async () => {
+  const h = recognizerHarness({ texts: ['6000\nCHARACTER\nKuro', 'OP15-025'] });
+  const frame = { width: 1000, height: 1500 };
+  const result = await h.session.recognize(frame, { probe: true, enhanced: true, confirm: true }); h.session.close();
+  assert.equal(result.numbers[0], 'OP15025'); assert.equal(h.modes.length, 2);
+  assert.ok(h.draws.some(args => args[2] === 600 && args[4] === 900));
 });
 test('late worker startup is terminated after cancellation', async () => {
   const h = recognizerHarness({ delayStart: true });

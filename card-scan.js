@@ -173,6 +173,20 @@ const OQ_SCAN = (() => {
     ctx.putImageData(image, 0, 0);
   }
 
+  // Some foil nameplates use gold/yellow letters over blue artwork. A
+  // color-opponent text view separates those letters where luminance-based
+  // contrast cannot. It is a second OCR view, never the image used for stars.
+  function maskFoilText(canvas) {
+    const ctx = canvas.getContext('2d');
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    for (let i = 0; i < pixels.data.length; i += 4) {
+      const warm = Math.min(pixels.data[i], pixels.data[i + 1]);
+      const value = warm - pixels.data[i + 2] > 23 && warm > 65 ? 0 : 255;
+      pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = value;
+    }
+    ctx.putImageData(pixels, 0, 0);
+  }
+
   const textWords = value => String(value || '').normalize('NFKD').toUpperCase()
     .replace(/[^A-Z0-9]+/g, ' ').trim();
   const baseName = value => textWords(String(value || '').replace(/\([^)]*\)/g, '')
@@ -202,8 +216,12 @@ const OQ_SCAN = (() => {
         const ruleHits = ruleWords.filter(word => padded.includes(' ' + word + ' ')).length;
         const cardContext = /\b(?:CHARACTER|LEADER|STAGE|EVENT|COUNTER|ON PLAY|YOUR TURN)\b/.test(all);
         const strong = exactLine && (powerMatch || (cardContext && ruleHits >= 2));
-        candidates.push({ id: String(card.id), name, strong, score: (exactLine ? 20 : 5) + (strong ? 30 : 0) + Math.min(5, ruleHits) });
+        candidates.push({ id: String(card.id), name, exactLine, strong, score: (exactLine ? 20 : 5) + (strong ? 30 : 0) + Math.min(5, ruleHits) });
       }
+      // A visible nameplate is stronger than a name mentioned in rules text
+      // (notably the ubiquitous words "DON!! card"). Multiple exact names
+      // remain ambiguous rather than arbitrarily selecting one.
+      if (candidates.some(candidate => candidate.exactLine)) candidates = candidates.filter(candidate => candidate.exactLine);
       candidates.sort((a, b) => b.score - a.score);
     }
     const names = [...new Set(candidates.map(candidate => candidate.name))];
@@ -242,13 +260,13 @@ const OQ_SCAN = (() => {
       })();
       return race(starting);
     }
-    async function recognize(frame, { probe = false } = {}) {
+    async function recognize(frame, { probe = false, enhanced = false, confirm = false } = {}) {
       if (closed) throw new DOMException('Scan cancelled', 'AbortError');
       if (busy) throw new Error('A scan is already running');
       busy = true;
       let timer;
       const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => { reject(new Error('Scan timed out')); close(); }, 65000);
+        timer = setTimeout(() => { reject(new Error('Scan timed out')); close(); }, probe ? (enhanced ? 16000 : 12000) : 65000);
       });
       const run = task => Promise.race([race(task), timeout]);
       let text = '';
@@ -256,26 +274,39 @@ const OQ_SCAN = (() => {
         const ocr = await run(getWorker());
         // Full-frame first finds names wherever the card lies. Overlapping
         // tiles then magnify small card numbers without assuming card edges.
-        const regions = probe ? [
-          [[0, 0, 1, 1], 1400, '11'], [[0, 0, 1, .6], 1800, '11'], [[0, .4, 1, .6], 1800, '11']
+        const regions = probe && !enhanced ? [
+          [[0, 0, 1, 1], 1400, '11'], [[0, 0, 1, 1], 1400, '11', 'foil']
+        ] : probe && confirm ? [
+          [[0, 0, 1, 1], 1800, '11'], [[0, .4, 1, .6], 2100, '11'], [[0, 0, 1, .6], 2100, '11']
+        ] : probe ? [
+          [[0, 0, 1, 1], 1800, '11', 'foil'], [[0, 0, 1, 1], 1800, '6'],
+          [[0, 0, 1, .6], 1800, '11'], [[0, .4, 1, .6], 1800, '11']
         ] : [
-          [[0, 0, 1, 1], 1800, '11'], [[0, 0, 1, .6], 2100, '11'], [[0, .4, 1, .6], 2100, '11'],
+          [[0, 0, 1, 1], 1800, '11'], [[0, 0, 1, 1], 1800, '11', 'foil'],
+          [[0, 0, 1, .6], 2100, '11'], [[0, .4, 1, .6], 2100, '11'],
           [[0, .65, 1, .35], 2400, '6'], [[.35, .45, .65, .55], 1800, '11'],
           [[0, 0, 1, 1], 1800, '6']
         ];
         let evidence = resolveEvidence('', options);
         for (let i = 0; i < regions.length; i++) {
-          const [region, maxSide, mode] = regions[i];
+          const [region, maxSide, mode, treatment] = regions[i];
           const scale = Math.min(3, maxSide / Math.max(frame.width * region[2], frame.height * region[3]));
           const crop = picture(frame, frame, region, scale);
+          let original;
           try {
+            if (treatment === 'foil') {
+              original = picture(crop, crop, [0, 0, 1, 1]);
+              maskFoilText(crop);
+            }
             await run(ocr.setParameters({ tessedit_pageseg_mode: mode, preserve_interword_spaces: '1' }));
             const result = await run(ocr.recognize(crop, {}, { text: true, blocks: true }));
             text += '\n' + result.data.text;
             evidence = resolveEvidence(text, options);
-            if (evidence.numbers.length) return applyStarEvidence(evidence, detectPrintingStar(crop, result.data, evidence.numbers), options);
-            if (probe && evidence.name && evidence.strongName) return evidence;
-            if (!probe && i > 0 && !evidence.numbers.length) {
+            evidence.enhanced = enhanced || treatment === 'foil';
+            if (evidence.numbers.length) return applyStarEvidence(evidence, detectPrintingStar(original || crop, result.data, evidence.numbers), options);
+            if (treatment === 'foil' && evidence.name) return evidence;
+            if (probe && !confirm && evidence.name && evidence.strongName) return evidence;
+            if (!probe && i > 1 && !evidence.numbers.length) {
               const original = picture(crop, crop, [0, 0, 1, 1]);
               try {
                 boostNumberContrast(crop);
@@ -285,7 +316,10 @@ const OQ_SCAN = (() => {
                 if (evidence.numbers.length) return applyStarEvidence(evidence, detectPrintingStar(original, enhanced.data, evidence.numbers), options);
               } finally { original.width = original.height = 0; }
             }
-          } finally { crop.width = crop.height = 0; }
+          } finally {
+            crop.width = crop.height = 0;
+            if (original) original.width = original.height = 0;
+          }
         }
         return evidence;
       } finally {
@@ -302,5 +336,5 @@ const OQ_SCAN = (() => {
     finally { session.close(); }
   }
 
-  return { normalize, readNumbers, picture, recognize, analyzeFrame, resolveEvidence, createRecognizer, detectPrintingStar, applyStarEvidence };
+  return { normalize, readNumbers, picture, recognize, analyzeFrame, resolveEvidence, createRecognizer, detectPrintingStar, applyStarEvidence, maskFoilText };
 })();

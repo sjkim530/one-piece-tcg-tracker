@@ -3754,6 +3754,8 @@
     let cameraSession = 0, capturing = false, previewStartedAt = 0;
     let lastVideoTime, lastFrameAt = 0, nextProbeAt = 0;
     let previousMatch = null, analysisUnavailable = false, recognized = null;
+    let previousEvidence = null, missedProbes = 0, autoPaused = false;
+    let autoStartedAt = null, autoPauseMessage = '';
 
     function cameraMode(active) {
       dialog.classList.toggle('camera-active', active);
@@ -3766,7 +3768,7 @@
       clearTimeout(previewTimer); previewTimer = null;
       probeController?.abort(); recognizer?.close();
       recognizer = probeController = probeTask = null;
-      previousMatch = null; lastVideoTime = undefined;
+      previousMatch = previousEvidence = null; missedProbes = 0; lastVideoTime = undefined; autoStartedAt = null;
       sample.width = sample.height = 0;
       cameraRequest = null;
       stream?.getTracks().forEach(track => track.stop());
@@ -3777,6 +3779,24 @@
     function showQuality(message, state) {
       if (quality.textContent !== message) quality.textContent = message;
       quality.dataset.state = state;
+    }
+    function showProbeProgress(task) {
+      const elapsed = performance.now() - task.startedAt;
+      showQuality(elapsed >= 10000 ? 'This scan is taking longer. You can tap Scan card or cancel and try a closer photo.'
+        : elapsed >= 5000 ? 'Still reading the card. Keep its text visible; Scan card is available at any time.'
+        : task.phase, 'matching');
+    }
+    function pauseAutomatic(message) {
+      automatic.checked = false; autoPaused = true; autoPauseMessage = message;
+      probeController?.abort(); recognizer?.close();
+      recognizer = probeController = probeTask = null;
+      previousMatch = previousEvidence = null;
+      showQuality(message, 'manual');
+    }
+    function automaticBudgetExpired() {
+      if (!automatic.checked || autoStartedAt == null || performance.now() - autoStartedAt < 20000) return false;
+      pauseAutomatic('Automatic matching paused after 20 seconds. Move closer, then enable Auto capture to retry, or tap Scan card.');
+      return true;
     }
     function frameAvailable() {
       return video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
@@ -3842,21 +3862,28 @@
     }
     async function probe(session) {
       if (probeTask || !automatic.checked || !stream || !frameAvailable()) return;
-      const task = probeTask = {};
+      const enhanced = missedProbes >= 2 || previousEvidence?.enhanced === true;
+      if (autoStartedAt == null) autoStartedAt = performance.now();
+      const task = probeTask = { startedAt: performance.now(), phase: enhanced
+        ? 'Trying a more detailed scan…' : 'Looking for a card number or name…' };
       let frame, usedRecognizer;
       try {
         frame = fullFrame();
         if (!recognizer) {
           probeController = new AbortController();
           recognizer = OQ_SCAN.createRecognizer(probeController.signal, stage => {
-            if (session === cameraSession && automatic.checked) showQuality(stage === 'recognizing text'
-              ? 'Looking for a card number or name…' : 'Loading the scanner. Keep one card visible…', 'matching');
+            if (session !== cameraSession || !automatic.checked || !probeTask) return;
+            probeTask.phase = stage === 'recognizing text' ? (missedProbes >= 2
+              ? 'Trying a more detailed scan…' : 'Looking for a card number or name…')
+              : 'Loading the scanner. Keep one card visible…';
+            showProbeProgress(probeTask);
           }, { cards: S.cards, isStarred: card => E.rarityBadge(card).star });
         }
         usedRecognizer = recognizer;
-        showQuality('Looking for a card number or name…', 'matching');
-        const evidence = await usedRecognizer.recognize(frame, { probe: true });
+        showProbeProgress(task);
+        const evidence = await usedRecognizer.recognize(frame, { probe: true, enhanced });
         if (session !== cameraSession || !dialog.open || document.hidden || !automatic.checked) return;
+        if (automaticBudgetExpired()) return;
         // Two separate advancing camera observations must agree. OCR passes over
         // the same frozen frame do not count as separate observations.
         const signature = evidence.numbers.length ? 'number:' + [...evidence.numbers].sort().join(',')
@@ -3864,9 +3891,17 @@
         if (signature && previousMatch === signature) {
           // A high-resolution pass also checks the printing star, even when
           // the smaller probes already read the card number.
-          showQuality('Card found. Checking its number and printing star…', 'matching');
-          const finalEvidence = await usedRecognizer.recognize(frame);
+          const alreadyDetailed = evidence.enhanced && previousEvidence?.enhanced;
+          const confirmedStar = evidence.numbers.length && evidence.starred === true && previousEvidence?.starred === true;
+          task.phase = alreadyDetailed || confirmedStar ? 'Card identified. Preparing possible printings…'
+            : 'Card found. Checking its number and printing star…';
+          showProbeProgress(task);
+          // Two color-enhanced name observations already support a candidate
+          // list. Repeating the entire slow manual pipeline cannot prove a
+          // printing from unreadable text, so leave the uncertainty visible.
+          const finalEvidence = alreadyDetailed || confirmedStar ? evidence : await usedRecognizer.recognize(frame, { probe: true, enhanced: true, confirm: true });
           if (session !== cameraSession || document.hidden || !automatic.checked) return;
+          if (automaticBudgetExpired()) return;
           if (evidence.numbers.length && finalEvidence.numbers.length &&
               !finalEvidence.numbers.some(code => evidence.numbers.includes(code))) {
             previousMatch = null;
@@ -3886,6 +3921,12 @@
           return;
         }
         previousMatch = signature;
+        previousEvidence = signature ? evidence : null;
+        missedProbes = signature ? 0 : missedProbes + 1;
+        if (missedProbes >= 4) {
+          pauseAutomatic('Could not identify this view automatically. Move closer, then enable Auto capture to retry, or tap Scan card.');
+          return;
+        }
         nextProbeAt = performance.now() + (signature ? 350 : 1800);
         showQuality(signature ? 'Possible card found. Keep it visible to confirm…' : evidence.readNumbers.length
           ? 'Card number read, but it is not in the catalog. Try Scan card to review.'
@@ -3906,6 +3947,8 @@
     function preview(session) {
       if (session !== cameraSession || !stream || !dialog.open || document.hidden) return;
       const now = performance.now(); capture.disabled = !frameAvailable();
+      automaticBudgetExpired();
+      if (probeTask) showProbeProgress(probeTask);
       if (!frameAvailable()) {
         previousMatch = null;
         showQuality(now - previewStartedAt < 3000 ? 'Starting camera preview…' :
@@ -3927,7 +3970,8 @@
             previousMatch = null;
             if (!probeTask) showQuality(result.message, result.state);
           } else if (!automatic.checked) {
-            showQuality('Auto capture off · Tap Scan card when ready', 'manual');
+            showQuality(autoPaused ? autoPauseMessage
+              : 'Auto capture off · Tap Scan card when ready', 'manual');
           } else if (!probeTask && now >= nextProbeAt) {
             probe(session);
           }
@@ -3959,7 +4003,7 @@
           stopCamera(); status.textContent = 'Camera disconnected. Reopen it or choose a photo.'; status.focus();
         }, { once: true });
         cameraMode(true); previewStartedAt = lastFrameAt = performance.now();
-        nextProbeAt = 0; analysisUnavailable = false;
+        nextProbeAt = 0; analysisUnavailable = false; autoPaused = false;
         showQuality('Starting camera preview…', 'warming'); $('#scan-cancel-camera').focus({ preventScroll: true });
         try {
           Promise.resolve(video.play()).catch(() => {
@@ -3983,7 +4027,7 @@
     }
     capture.addEventListener('click', captureFrame);
     automatic.addEventListener('change', () => {
-      previousMatch = null;
+      previousMatch = previousEvidence = null; missedProbes = 0; autoPaused = false; autoStartedAt = null;
       if (!automatic.checked) {
         probeController?.abort(); recognizer?.close(); recognizer = null; probeController = null;
         showQuality('Auto capture off · Tap Scan card when ready', 'manual');
