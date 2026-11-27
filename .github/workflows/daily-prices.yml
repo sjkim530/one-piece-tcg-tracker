@@ -34,10 +34,21 @@ jobs:
         run: |
           python3 -m pip install opencv-python-headless==4.12.0.88
           python3 tests-scan-index.py
-          if ! python3 build-scan-index.py --cache "$RUNNER_TEMP/scan-reference-cache"; then
-            test -s scan-index/manifest.json || exit 1
-            echo 'Retaining the previously verified artwork index after a source failure.'
+          if [ "${{ github.event_name }}" != push ]; then
+            if ! python3 build-scan-index.py --cache "$RUNNER_TEMP/scan-reference-cache"; then
+              test -s scan-index/manifest.json || exit 1
+              echo 'Retaining the previously verified artwork index after a source failure.'
+            fi
           fi
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path('scan-index')
+          manifest = json.loads((root / 'manifest.json').read_text())
+          binary = (root / manifest['binary']).read_bytes()
+          assert len(binary) == manifest['byteLength']
+          assert hashlib.sha256(binary).hexdigest() == manifest['sha256']
+          PY
       - name: Save daily prices and record signals
         run: |
           if [ "${{ github.event_name }}" != push ]; then python3 sync_prices.py; fi
