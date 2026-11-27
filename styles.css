@@ -164,6 +164,11 @@ a { color: var(--sea); }
   grid-template-columns: minmax(0, 1fr) 80px minmax(86px, auto) auto;
 }
 #catalog-ownership { margin: 9px 0 0; }
+#catalog-add-status { grid-column: 1 / -1; margin: 0; }
+#catalog-add-status:empty { display: none; }
+#catalog-add-status:not(:empty) { padding: 10px 12px; border-radius: 8px; font-weight: 600; }
+#catalog-add-status[data-state="success"] { background: #e7f5ec; color: #185c35; }
+#catalog-add-status[data-state="error"] { background: #fff0ef; color: #912b25; }
 #catalog-gameplay { margin-top: 16px; }
 .card-effect { white-space: pre-line; }
 .gameplay-links { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 0; list-style: none; }

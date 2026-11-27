@@ -66,6 +66,8 @@ jobs:
         run: |
           for file in app.js backup.js card-scan.js scan-vision.js scan-vision-worker.js collection.js data.js engine.js source.js market-analysis.js price-history.js sw.js; do node --check "$file" || exit 1; done
           node tests-cache.cjs
+          node tests-backup.cjs
+          node tests-feedback.cjs
           node tests-scan.cjs
           node tests-camera.cjs
           node tests-vision.cjs

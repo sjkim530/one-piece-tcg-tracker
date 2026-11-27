@@ -80,13 +80,34 @@ const OQ_BACKUP = (() => {
     let timer;
     let queued = Promise.resolve();
     let repairing = false;
+    let refreshing;
+    const checkLimit = 6000;
+
+    function checked(work) {
+      let timeout;
+      return Promise.race([Promise.resolve().then(work), new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Automatic backup could not be checked. Download a backup to keep a copy.')), checkLimit);
+      })]).finally(() => clearTimeout(timeout));
+    }
 
     function openDatabase() {
       return database ||= new Promise((resolve, reject) => {
         const request = indexedDB.open('grand-line-vault-backup', 1);
+        let finished = false;
+        const fail = error => {
+          if (finished) return;
+          finished = true; clearTimeout(timeout); reject(error);
+        };
+        const timeout = setTimeout(() => fail(new Error('Backup storage did not respond. Download a backup and try again.')), checkLimit);
         request.onupgradeneeded = () => request.result.createObjectStore('settings');
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          if (finished) { request.result.close(); return; }
+          finished = true; clearTimeout(timeout);
+          request.result.onversionchange = () => { request.result.close(); database = null; };
+          resolve(request.result);
+        };
+        request.onblocked = () => fail(new Error('Backup storage is blocked by another app tab. Close the other tab or download a backup.'));
+        request.onerror = () => fail(request.error || new Error('Backup storage is unavailable. Download a backup instead.'));
       }).catch(error => { database = null; throw error; });
     }
 
@@ -97,8 +118,14 @@ const OQ_BACKUP = (() => {
         const tx = db.transaction('settings', writing ? 'readwrite' : 'readonly');
         const store = tx.objectStore('settings');
         const request = writing ? store.put(next, 'backup') : store.get('backup');
-        tx.oncomplete = () => resolve(request.result);
-        tx.onabort = () => reject(tx.error);
+        let expired = false;
+        const timeout = setTimeout(() => {
+          expired = true;
+          try { tx.abort(); } catch { /* Already completed. */ }
+          reject(new Error('Backup storage did not respond. Download a backup and try again.'));
+        }, checkLimit);
+        tx.oncomplete = () => { clearTimeout(timeout); if (!expired) resolve(request.result); };
+        tx.onabort = () => { clearTimeout(timeout); reject(tx.error || new Error('Backup storage could not be read or saved.')); };
       });
     }
 
@@ -114,13 +141,28 @@ const OQ_BACKUP = (() => {
     }
 
     function locked(work) {
-      const execute = () => navigator.locks ? navigator.locks.request(format + '-backup', work) : work();
+      // Cover time spent behind an earlier pending write as well as execution.
+      // This changes only the status; it never releases the lock or queue.
+      const watchdog = setTimeout(() => report('error', 'Automatic backup has not been confirmed. Download a backup to keep a copy.'), checkLimit + 1000);
+      const execute = async () => {
+        let waiting;
+        try {
+          if (!navigator.locks) return await work();
+          const controller = new AbortController();
+          waiting = setTimeout(() => controller.abort(), checkLimit);
+          return await navigator.locks.request(format + '-backup', { signal: controller.signal }, async () => {
+            clearTimeout(waiting);
+            return work();
+          });
+        } finally { clearTimeout(waiting); }
+      };
       return queued = queued.then(execute, execute).catch(error => {
         const needsPermission = ['NotAllowedError', 'SecurityError'].includes(error.name);
         report(needsPermission ? 'permission' : 'error', needsPermission
           ? 'Reconnect your backup file to save recent changes.'
+          : error.name === 'AbortError' ? 'Another tab is using the backup file. Download a backup or close that tab and try again.'
           : error.message || 'The backup could not be updated.');
-      });
+      }).finally(() => clearTimeout(watchdog));
     }
 
     async function flush() {
@@ -134,7 +176,7 @@ const OQ_BACKUP = (() => {
         report('error', 'This browser lost its link to the saved collection. Restore the file and choose it again.');
         return;
       }
-      if (await handle.queryPermission({ mode: 'readwrite' }) !== 'granted') {
+      if (await checked(() => handle.queryPermission({ mode: 'readwrite' })) !== 'granted') {
         report('permission', 'Reconnect your backup file to save recent changes.');
         return;
       }
@@ -143,9 +185,9 @@ const OQ_BACKUP = (() => {
         report('error', 'This browser has no saved collection. Restore the backup file first.');
         return;
       }
-      const dataHash = await digest(JSON.stringify(data));
-      const existing = await handle.getFile();
-      if (existing.size > limit || await digest(await existing.text()) !== connection.fileHash) {
+      const dataHash = await checked(() => digest(JSON.stringify(data)));
+      const existing = await checked(() => handle.getFile());
+      if (existing.size > limit || await checked(async () => digest(await existing.text())) !== connection.fileHash) {
         report('error', 'The backup file changed or was replaced. Restore it or choose a new file.');
         return;
       }
@@ -232,8 +274,19 @@ const OQ_BACKUP = (() => {
       setTimeout(() => URL.revokeObjectURL(url), 30000);
     }
 
-    return { supported, connect, reconnect, change, download,
-      refresh: () => supported && locked(flush) };
+    function refresh() {
+      if (!supported) {
+        report('unsupported', 'Automatic backup is unavailable in this browser. Use Download backup to save a copy, then Restore from file when needed.');
+        return Promise.resolve();
+      }
+      if (!refreshing) {
+        report('checking', 'Checking the linked backup file. You can download a copy now.');
+        refreshing = locked(flush).finally(() => { refreshing = null; });
+      }
+      return refreshing;
+    }
+
+    return { supported, connect, reconnect, change, download, refresh };
   }
 
   return { create, readFile, encode, decode };

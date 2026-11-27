@@ -6,6 +6,8 @@
 (function (D, E, C) {
   'use strict';
 
+  const APP_VERSION = '3.9.1';
+
   const $  = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 
@@ -2876,7 +2878,7 @@
     connect.hidden = !backup.supported || state === 'saving';
     connect.textContent = filename ? 'Choose backup file' : 'Enable automatic backup';
     $('#backup-reconnect').hidden = state !== 'permission' || !filename;
-    $('#backup-download').hidden = backup.supported && !['permission', 'error'].includes(state);
+    $('#backup-download').hidden = false;
     const chip = $('#backup-chip');
     const labels = { ready: 'Backup on', saving: 'Backing up', permission: 'Backup paused', error: 'Backup paused' };
     const dot = { ready: 'on', saving: 'busy', permission: 'err', error: 'err' };
@@ -2884,7 +2886,10 @@
     chip.innerHTML = labels[state] ? `<span class="sync-dot ${dot[state]}"></span><span>${labels[state]}</span>` : '';
   }
 
+  let backupWired = false;
   function wireBackup() {
+    if (backupWired) return;
+    backupWired = true;
     const input = $('#backup-file');
     const preview = $('#backup-preview');
     const status = $('#backup-restore-status');
@@ -2940,9 +2945,6 @@
       status.textContent = 'Backup restored on this device.';
       $('#backup-restore').focus();
     });
-    if (!backup.supported) {
-      renderBackupStatus({ state: 'unsupported', message: 'Use Download backup to save a copy in this browser.' });
-    }
   }
 
   /* ========================================================= COLLAPSING ==
@@ -3627,7 +3629,43 @@
     update();
   }
 
+  let catalogFeedbackTimer;
+  function clearCatalogFeedback() {
+    clearTimeout(catalogFeedbackTimer);
+    const button = $('#catalog-add button[type="submit"]');
+    button.textContent = 'Add to Collection';
+    delete button.dataset.saved;
+    const status = $('#catalog-add-status');
+    if (status) {
+      status.textContent = '';
+      delete status.dataset.state;
+    }
+  }
+
+  function showCatalogFeedback(message, saved) {
+    const status = $('#catalog-add-status');
+    if (status) {
+      status.dataset.state = saved ? 'success' : 'error';
+      status.textContent = message;
+    } else {
+      // A cached older page may load a newer script after its cache expires.
+      $('#catalog-ownership').textContent = message;
+    }
+    if (!saved) return;
+    const button = $('#catalog-add button[type="submit"]');
+    button.textContent = '✓ Added to Collection';
+    button.dataset.saved = 'true';
+    button.disabled = true;
+    catalogFeedbackTimer = setTimeout(() => {
+      button.textContent = 'Add to Collection';
+      delete button.dataset.saved;
+      const card = S.byKey[catalogCardKey];
+      button.disabled = !$('#catalog-binder').value || (catalogPrinting ?? card?.printing) == null;
+    }, 2200);
+  }
+
   function renderCatalogOwnership(message = '') {
+    clearCatalogFeedback();
     const card = S.byKey[catalogCardKey];
     const printing = catalogPrinting ?? card?.printing;
     const label = printing || 'Finish unavailable';
@@ -4071,12 +4109,14 @@
     on('#catalog-close', 'click', () => $('#catalog-dialog').close());
     on('#sealed-history-close', 'click', () => $('#sealed-history-dialog').close());
     on('#catalog-binder', 'change', () => renderCatalogOwnership());
+    on('#catalog-quantity', 'input', () => renderCatalogOwnership());
     on('#catalog-finish', 'change', event => {
       catalogPrinting = event.currentTarget.value;
       renderCatalogCard();
     });
     on('#catalog-add', 'submit', event => {
       event.preventDefault();
+      if ($('#catalog-add button[type="submit"]').dataset.saved === 'true') return;
       const binder = liveCols().find(col => sameBinder(col.id, $('#catalog-binder').value));
       const qty = $('#catalog-quantity').valueAsNumber;
       const card = S.byKey[catalogCardKey];
@@ -4085,11 +4125,13 @@
           !Number.isInteger(qty) || qty < 1 || qty > 9999) return;
       S.items.push(C.newItem(binder.id, catalogCardKey, { qty, printing, src: 'buy' }));
       if (!persistCollection()) {
-        renderCatalogOwnership('Could not save. Free up browser storage and try again.');
+        renderCatalogOwnership();
+        showCatalogFeedback('Could not save. Free up browser storage and try again.', false);
         return;
       }
       S.curCol = binder.id;
-      renderCatalogOwnership(`Added ${qty}${printing ? ' ' + printing : ''} to ${binder.name}.`);
+      renderCatalogOwnership();
+      showCatalogFeedback(`Added ${qty} ${qty === 1 ? 'copy' : 'copies'} to ${binder.name}. Saved on this device.`, true);
       if (S.tab === 'signals' && $('#sig-scope').value === 'owned') renderScannerResults();
     });
   }
@@ -4203,7 +4245,6 @@
 
   function wire() {
     wireSelectLabels();
-    wireBackup();
     const tabs = $$('#tabs button');
     tabs.forEach(button => button.addEventListener('click', () => switchTab(button.dataset.tab)));
     on('#nav-toggle', 'click', event => {
@@ -4489,6 +4530,17 @@
 
   let wired = false;
   async function boot() {
+    // Backup availability must not wait for catalog/history requests or the
+    // rest of the UI wiring. Manual download stays available while checking.
+    try {
+      const version = $('#app-version');
+      if (version) version.textContent = 'Version ' + APP_VERSION;
+      if (!wired) wireBackup();
+      backup.refresh();
+    } catch (error) {
+      const status = $('#backup-status');
+      if (status) status.textContent = 'Backup controls could not start. Reload the app to try again.';
+    }
     const sharedUpdate = $('#shared-history-update');
     OQ_HISTORY.sharedStatus().then(stamp => {
       const date = new Date(stamp).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
@@ -4527,7 +4579,7 @@
           if ($('#catalog-dialog').open) renderCatalogOwnership();
         });
         wired = true;
-        document.addEventListener('visibilitychange', () => backup.refresh());
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) backup.refresh(); });
       }
       if (ensureCollections() || !committedCollection.backupId) persistCollection();
       backup.refresh();
