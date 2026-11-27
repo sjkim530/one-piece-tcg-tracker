@@ -866,15 +866,15 @@
   });
 
   describe('market verdict evidence');
-  it('uses printed rarity for Sell, keeps R at $1, and leaves Buy at $10', () => {
+  it('uses the same printed rarity and price eligibility for Buy and Sell', () => {
     const prices = amount => Array.from({ length: 201 }, (_, day) => [day,
       day >= 194 ? amount : day >= 167 && day <= 173 ? Math.round(amount * 1.8) : Math.round(amount * (.4 + day % 40 / 100)), amount]);
     eq(OQ_MARKET.analyze(prices(99), 200, 'R').call, 'Hold');
     eq(OQ_MARKET.analyze(prices(100), 200, 'R').call, 'Sell Now');
     eq(OQ_MARKET.analyze(prices(20), 200, 'SR').call, 'Sell Now');
     for (const rarity of ['C', 'UC', '?']) eq(OQ_MARKET.analyze(prices(2000), 200, rarity).call, 'Hold');
-    eq(OQ_MARKET.eligibility(999, 'SR').buyEligible, false);
-    eq(OQ_MARKET.eligibility(1000, 'C').buyEligible, true);
+    eq(OQ_MARKET.eligibility(999, 'SR').buyEligible, true);
+    eq(OQ_MARKET.eligibility(1000, 'C').buyEligible, false);
     eq(OQ_MARKET.eligibility(0, 'SR').sellEligible, false);
   });
   it('uses a recent two-week trend for a limited Hold without lowering buy and sell requirements', () => {

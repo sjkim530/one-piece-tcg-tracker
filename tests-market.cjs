@@ -30,20 +30,24 @@ test('R sale eligibility changes exactly at $1 while timing gates stay unchanged
   const at = market.analyze(sellSeries(100), today, 'R');
   assert.equal(below.call, 'Hold'); assert.equal(below.sellEligible, false);
   assert.match(below.sellReason, /at least \$1/);
-  assert.equal(at.call, 'Sell Now'); assert.equal(at.sellEligible, true); assert.equal(at.buyEligible, false);
+  assert.equal(at.call, 'Sell Now'); assert.equal(at.sellEligible, true); assert.equal(at.buyEligible, true);
   for (const rarity of ['SR', 'SEC', 'SP', 'TR', 'L', 'PR', 'DON']) {
     assert.equal(market.analyze(sellSeries(20), today, rarity).call, 'Sell Now', rarity);
     assert.equal(market.eligibility(1, rarity).sellEligible, true, rarity + ' positive-cent policy');
   }
 });
 
-test('expensive C/UC, unknown rarity and zero price never produce a sale flag', () => {
+test('C/UC, unknown rarity and nonpositive price are excluded from both directions', () => {
   for (const rarity of ['C', 'UC', '', '?', undefined, 'new-unknown-rarity']) {
-    const verdict = market.analyze(sellSeries(50000), today, rarity);
-    assert.equal(verdict.call, 'Hold', String(rarity)); assert.equal(verdict.sellEligible, false);
+    for (const series of [sellSeries(50000), buySeries(50000)]) {
+      const verdict = market.analyze(series, today, rarity);
+      assert.equal(verdict.call, 'Hold', String(rarity));
+      assert.equal(verdict.sellEligible, false); assert.equal(verdict.buyEligible, false);
+    }
   }
   for (const price of [0, -1, NaN, Infinity]) {
     assert.equal(market.eligibility(price, 'SR').sellEligible, false);
+    assert.equal(market.eligibility(price, 'SR').buyEligible, false);
     assert.notEqual(market.analyze(sellSeries(price), today, 'SR').call, 'Sell Now');
   }
 });
@@ -54,6 +58,7 @@ test('printed rarity uses canonical SP/TR overrides while starred C/UC/R keep ba
     const badge = E.rarityBadge({ card_name: 'Example (Alternate Art)', rarity });
     assert.equal(badge.text, rarity); assert.equal(badge.star, true);
     assert.equal(market.analyze(sellSeries(99), today, badge.text).sellEligible, false);
+    assert.equal(market.analyze(buySeries(99), today, badge.text).buyEligible, false);
   }
   for (const [tag, card] of [['SP', { card_name: 'Example (SP)', rarity: 'C' }], ['TR', { card_name: 'Example', rarity: 'TR' }]]) {
     const badge = E.rarityBadge(card);
@@ -62,12 +67,35 @@ test('printed rarity uses canonical SP/TR overrides while starred C/UC/R keep ba
   }
 });
 
-test('Buy still requires $10 and remains available regardless of printed rarity', () => {
-  for (const rarity of ['C', 'UC', 'R', 'SR', '?', undefined]) {
-    assert.equal(market.analyze(buySeries(1000), today, rarity).call, 'Buy Now');
-    const below = market.analyze(buySeries(999), today, rarity);
-    assert.notEqual(below.call, 'Buy Now'); assert.equal(below.buyEligible, false);
+test('sub-$10 Buy uses the same rarity policy as Sell, including the exact R $1 boundary', () => {
+  assert.equal(market.strategy, 'rarity-trades-v1');
+  assert.equal(market.analyze(buySeries(99), today, 'R').call, 'Hold');
+  assert.equal(market.analyze(buySeries(100), today, 'R').call, 'Buy Now');
+  for (const rarity of ['SR', 'SEC', 'SP', 'TR', 'L', 'PR', 'DON']) {
+    const verdict = market.analyze(buySeries(20), today, rarity);
+    assert.equal(verdict.call, 'Buy Now', rarity);
+    assert.equal(verdict.buyEligible, verdict.sellEligible);
+    assert.equal(market.eligibility(1, rarity).buyEligible, true);
   }
+});
+
+test('new Buy eligibility does not bypass freshness, history, rising momentum, lower percentile or listing gates', () => {
+  const points = buySeries(100);
+  assert.equal(market.analyze(points, today + 4, 'R').call, 'Insufficient data');
+  assert.notEqual(market.analyze(points.slice(-18), today, 'R').call, 'Buy Now');
+  for (const low of [49, 96]) {
+    const changed = points.map(point => point.slice()); changed.at(-1)[2] = low;
+    assert.notEqual(market.analyze(changed, today, 'R').call, 'Buy Now');
+  }
+  for (const low of [50, 95]) {
+    const changed = points.map(point => point.slice()); changed.at(-1)[2] = low;
+    assert.equal(market.analyze(changed, today, 'R').call, 'Buy Now');
+  }
+  const falling = points.map(point => point.slice());
+  for (let i = 167; i <= 173; i++) falling[i][1] = 180;
+  assert.notEqual(market.analyze(falling, today, 'R').call, 'Buy Now');
+  const aboveRange = points.map((point, i) => [point[0], i < 167 || i > 173 && i < 194 ? 40 + i % 40 : point[1], point[2]]);
+  assert.notEqual(market.analyze(aboveRange, today, 'R').call, 'Buy Now');
 });
 
 test('freshness, history, falling momentum, upper percentile and 90–125% listing gates remain required', () => {
@@ -91,10 +119,10 @@ function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'optcg-market-'));
   for (const file of ['market-analysis.js', 'build-market-summary.cjs', 'track-market-signals.cjs']) fs.copyFileSync(path.join(__dirname, file), path.join(dir, file));
   const archive = path.join(dir, 'price-history'); fs.mkdirSync(archive);
-  const cards = { '1': { rarity: 'R' }, '2': { rarity: 'SR' }, '3': { rarity: 'C' }, '5': { rarity: 'R' } };
-  const series = { '1:Foil': sellSeries(100), '2:Foil': sellSeries(20), '3:Foil': sellSeries(50000), '4:Foil': sellSeries(100), '5:Foil': sellSeries(100).slice(-18) };
+  const cards = { '1': { rarity: 'R' }, '2': { rarity: 'SR' }, '3': { rarity: 'C' }, '5': { rarity: 'R' }, '6': { rarity: 'SR' } };
+  const series = { '1:Foil': sellSeries(100), '2:Foil': sellSeries(20), '3:Foil': sellSeries(50000), '4:Foil': sellSeries(100), '5:Foil': sellSeries(100).slice(-18), '6:Foil': buySeries(20) };
   fs.writeFileSync(path.join(archive, 'status.json'), JSON.stringify({ sourceUpdatedAt: stamp }));
-  fs.writeFileSync(path.join(archive, 'singles.json'), JSON.stringify({ sourceUpdatedAt: stamp, products: { 1: 'Character', 2: 'Character', 3: 'Character', 4: 'Character' } }));
+  fs.writeFileSync(path.join(archive, 'singles.json'), JSON.stringify({ sourceUpdatedAt: stamp, products: { 1: 'Character', 2: 'Character', 3: 'Character', 4: 'Character', 6: 'Character' } }));
   fs.writeFileSync(path.join(dir, 'card-metadata.json'), JSON.stringify({ version: 1, sourceUpdatedAt: stamp, cards }));
   for (let bucket = 0; bucket < 256; bucket++) fs.writeFileSync(path.join(archive, bucket + '.json'), JSON.stringify(bucket ? {} : Object.fromEntries(
     Object.entries(series).map(([key, points]) => [key, points.slice().reverse().flat()]))));
@@ -117,6 +145,7 @@ test('precomputed summary equals live analysis with identical canonical rarity a
     assert.equal(summary.rows['4:Foil'].analysis.sellEligible, false);
     assert.equal(summary.rows['5:Foil'].analysis.evidence, 'limited');
     assert.equal(summary.rows['5:Foil'].analysis.rarity, 'R');
+    assert.equal(summary.rows['6:Foil'].analysis.call, 'Buy Now');
   } finally { f.clean(); }
 });
 
@@ -127,15 +156,17 @@ test('new tracker flags follow rarity policy and old same-day snapshots stay byt
     const file = path.join(f.dir, 'signal-ledger', today + '.json');
     const snapshot = JSON.parse(fs.readFileSync(file));
     assert.equal(snapshot.strategy, market.strategy);
-    assert.deepEqual(snapshot.calls.map(row => row.key).sort(), ['1:Foil', '2:Foil']);
+    assert.deepEqual(snapshot.calls.map(row => row.key).sort(), ['1:Foil', '2:Foil', '6:Foil']);
     const report = JSON.parse(fs.readFileSync(path.join(f.dir, 'signal-performance.json')));
     assert.equal(report.version, 2); assert.equal(report.strategy, market.strategy); assert.equal(report.trackedDays, 1);
-    const old = JSON.stringify({ version: 1, day: today, calls: [{ key: '3:Foil', call: 'Sell Now' }], peers: {} });
-    fs.writeFileSync(file, old); f.run('track-market-signals.cjs');
-    assert.equal(fs.readFileSync(file, 'utf8'), old);
-    const legacy = JSON.parse(fs.readFileSync(path.join(f.dir, 'signal-performance.json')));
-    assert.equal(legacy.trackedDays, 0); assert.equal(legacy.legacyDays, 1);
-    assert.ok(legacy.results.every(row => row.total === 0));
+    for (const strategy of [undefined, 'rarity-sell-v1']) {
+      const old = JSON.stringify({ version: 1, strategy, day: today, calls: [{ key: '3:Foil', call: 'Sell Now' }], peers: {} });
+      fs.writeFileSync(file, old); f.run('track-market-signals.cjs');
+      assert.equal(fs.readFileSync(file, 'utf8'), old);
+      const legacy = JSON.parse(fs.readFileSync(path.join(f.dir, 'signal-performance.json')));
+      assert.equal(legacy.trackedDays, 0); assert.equal(legacy.legacyDays, 1);
+      assert.ok(legacy.results.every(row => row.total === 0));
+    }
   } finally { f.clean(); }
 });
 

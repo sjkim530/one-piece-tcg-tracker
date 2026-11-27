@@ -6,7 +6,7 @@
 (function (D, E, C) {
   'use strict';
 
-  const APP_VERSION = '3.10.0';
+  const APP_VERSION = '3.10.1';
 
   const $  = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
@@ -1773,12 +1773,12 @@
       if (report.version !== 2 || report.strategy !== OQ_MARKET.strategy || !Array.isArray(report.results)) throw new Error('Unknown report format');
       if (scannerRun !== run) return;
       if (!report.trackedDays) {
-        host.textContent = 'Forward tracking for the current rarity-based sale rule starts with the next daily snapshot. Earlier flags used the previous $10 sale minimum and are excluded.';
+        host.textContent = 'Forward tracking for the current rarity-based Buy and Sell rules starts with the next daily snapshot. Earlier flags used a $10 minimum for both directions or for Buy only, and are excluded.';
         return;
       }
       const pct = value => value == null ? '—' : E.pct(value, 1);
       const stamp = Math.floor(Date.parse(report.sourceUpdatedAt) / 86400000);
-      host.innerHTML = `<p>Current rarity-based sale rule · Tracking since ${esc(OQ_HISTORY.dateLabel(report.start))} ·
+      host.innerHTML = `<p>Current rarity-based Buy and Sell rules · Tracking since ${esc(OQ_HISTORY.dateLabel(report.start))} ·
         ${Number(report.trackedDays)} of ${stamp - Number(report.start) + 1} UTC dates recorded ·
         Report through ${esc(OQ_HISTORY.dateLabel(stamp))}.
         ${Number(report.legacyDays) || 0} earlier-rule dates excluded.</p>` +
@@ -2589,9 +2589,37 @@
   }
 
   /* ---- the binder table -------------------------------------------------- */
+  function collectionSignal(item) {
+    const card = S.byKey[item.key];
+    const printing = holdingPrinting(item, card);
+    const unavailable = reason => ({ call: 'Unavailable', label: 'Unavailable', reason });
+    if (!card) return unavailable('Link this holding to a catalog card to see its market signal.');
+    if (!C.qtyOf(item)) return unavailable('A market signal requires at least one held copy.');
+    if (C.isGraded(item) || (item.cond && item.cond !== 'NM')) {
+      return unavailable('Market signals use raw near-mint prices and do not apply to this holding’s grade or condition.');
+    }
+    if (printing == null || ![card.printing, card.alt_printing?.printing].filter(value => value != null).includes(printing)) {
+      return unavailable('Confirm an available finish in Edit holdings to see its raw near-mint market signal.');
+    }
+    if (!collectionHistoryRun?.signals) return { call: 'Checking', label: 'Checking', reason: 'Checking this finish’s raw near-mint market history.' };
+    const signal = collectionHistoryRun.signals.get(holdingKey(card.id, printing));
+    if (!signal) return unavailable('Market history could not be loaded for this exact finish.');
+    const labels = { 'Buy Now': 'Buy', 'Sell Now': 'Sell', Hold: 'Hold', 'Insufficient data': 'No clear signal' };
+    if (!Object.hasOwn(labels, signal.call)) return unavailable('A market verdict is unavailable for this finish.');
+    return { call: signal.call, label: labels[signal.call],
+      reason: `Raw near-mint ${printing} market reference. ${signal.reason || 'Open card details to review the price evidence.'}` };
+  }
+
+  function collectionSignalBadge(item, interactive = false) {
+    const signal = collectionSignal(item);
+    const description = `${signal.label}. ${signal.reason}${interactive ? ' View card details.' : ''}`;
+    const attributes = `class="market-call collection-signal${interactive ? ' collection-card-signal' : ''}" data-call="${esc(signal.call)}" data-collection-signal="${esc(item.id)}" title="${esc(signal.reason)}" aria-label="${esc(description)}"`;
+    return interactive ? `<button type="button" ${attributes} data-key="${esc(item.key)}" data-printing="${esc(holdingPrinting(item))}">${esc(signal.label)}</button>`
+      : `<span ${attributes} role="img">${esc(signal.label)}</span>`;
+  }
+
   function isSellNow(item) {
-    return C.qtyOf(item) > 0 && !C.isGraded(item) && (!item.cond || item.cond === 'NM') &&
-      collectionHistoryRun?.signals?.get(holdingKey(item.key, holdingPrinting(item)))?.call === 'Sell Now';
+    return collectionSignal(item).call === 'Sell Now';
   }
 
   function renderCollectionSignals(items) {
@@ -2604,8 +2632,16 @@
       ? collectionHistoryRun?.partial ? 'Some signals are unavailable.' :
         !collectionHistoryRun?.signals ? 'Checking market signals…' : ''
       : '';
-    const eligible = new Set(selling.map(item => String(item.id)));
-    $$('[data-sell-badge]', $('#view-collection')).forEach(badge => { badge.hidden = !eligible.has(badge.dataset.sellBadge); });
+    const byId = new Map(items.map(item => [String(item.id), item]));
+    $$('[data-collection-signal]', $('#view-collection')).forEach(badge => {
+      const item = byId.get(badge.dataset.collectionSignal);
+      if (!item) return;
+      const signal = collectionSignal(item);
+      badge.dataset.call = signal.call;
+      badge.textContent = signal.label;
+      badge.title = signal.reason;
+      badge.setAttribute('aria-label', `${signal.label}. ${signal.reason}${badge.tagName === 'BUTTON' ? ' View card details.' : ''}`);
+    });
   }
 
   function refreshCollectionSignals() {
@@ -2672,7 +2708,7 @@
           <span class="small muted">${esc(finishLabel)} · ${esc(state || 'Raw')} · ${qty} ${qty === 1 ? 'copy' : 'copies'}</span>
           <div class="binder-values"><b>${each == null ? 'Unpriced' : E.money(each * qty, 2) + (qty > 1 ? ' <small>total</small>' : '')}</b>
           ${each != null && qty > 1 ? `<span class="small muted">${E.money(each, 2)} each</span>` : ''}</div>
-          <span class="market-call" data-call="Sell Now" data-sell-badge="${esc(it.id)}" hidden>Review for sale</span>
+          ${collectionSignalBadge(it)}
         </div>
       </article>`;
     }).join('') || '<p class="catalog-empty">' + (items.length ? 'No cards match these filters.' : 'This binder is empty. Find cards to start your collection.') + '</p>';
@@ -2687,8 +2723,7 @@
           ${card?.card_image ? `<img src="${esc(card.card_image)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : ''}
           <div class="nm">${card ? `<button type="button" class="collection-card-link" data-key="${esc(it.key)}" data-printing="${esc(printing)}">${esc(title)}</button>` : `<b>${esc(title)}</b>`}
             <span>${esc(number)}</span>
-            <button type="button" class="market-call collection-card-sell" data-call="Sell Now"
-              data-sell-badge="${esc(it.id)}" data-key="${esc(it.key)}" data-printing="${esc(printing)}" hidden>Review for sale</button></div>
+            ${collectionSignalBadge(it, !!card)}</div>
         </div></td>
         <td data-l="Set"><span class="tag">${esc(card ? setShort(card.set_id) : '—')}</span></td>
         <td data-l="State"><div class="holding-state">
@@ -3607,7 +3642,7 @@
           <summary>What would change the call?</summary>
           <p><strong>Buy:</strong> ${esc(call.buyReason)} ${call.buyEligible ? `Buy at a Market Price of ${money(call.buy.price)} or less with momentum of +5% or higher. The qualifying listing range is ${range([call.buy.minListing, call.buy.maxListing])} at the latest Market Price.` : ''}</p>
           <p><strong>Sell:</strong> ${esc(call.sellReason)} ${call.sellEligible ? `Review at a Market Price of ${money(call.sell.price)} or more with momentum of −5% or lower. The qualifying listing range is ${range([call.sell.minListing, call.sell.maxListing])} at the latest Market Price.` : ''}</p>
-          <p class="muted">Buy candidates require $10 or more. Sale reviews exclude C and UC; R requires $1 or more; other known printed rarities qualify at any positive price. Alternate-art stars do not change C, UC, or R eligibility. Both directions still require distinct thresholds and the existing history, trend, and listing checks. The ranges show the 10th–90th percentiles of observed prices. Momentum compares two seven-day medians about a month apart. Sale volume and time to sell are unavailable.</p>
+          <p class="muted">Buy candidates and sale reviews use the same eligibility: C and UC are excluded; R requires $1 or more; other known printed rarities qualify at any positive price. Alternate-art stars do not change C, UC, or R eligibility. Both directions still require distinct thresholds and the existing history, trend, and listing checks. The ranges show the 10th–90th percentiles of observed prices. Momentum compares two seven-day medians about a month apart. Sale volume and time to sell are unavailable.</p>
         </details>` : ''}
       ${last ? `
         <details class="small market-rules"${call.call === 'Sell Now' ? ' open' : ''}>
@@ -3619,7 +3654,7 @@
           <p>Estimated net <strong data-net aria-live="polite"></strong></p>
           <p class="muted">One US Marketplace Level 1–4 sale with seller-paid shipping, before buyer tax. <a href="https://help.tcgplayer.com/hc/en-us/articles/201357836-TCGplayer-Fees" target="_blank" rel="noopener noreferrer">TCGplayer fee schedule</a></p>
         </details>` : ''}
-      <p class="small muted">Experimental flags use TCGplayer price snapshots. A sale review is a timing flag; estimate fees and shipping separately. Sales volume, condition-specific quotes, and time to sell are unavailable. <a href="MARKET-BACKTEST.md" target="_blank" rel="noopener noreferrer">Earlier-rule backtest</a> used the previous $10 sale minimum and does not validate the current rarity-based rule.</p>`;
+      <p class="small muted">Experimental flags use TCGplayer price snapshots. Buy and Sell are timing flags; estimate fees and shipping separately. Sales volume, condition-specific quotes, and time to sell are unavailable. <a href="MARKET-BACKTEST.md" target="_blank" rel="noopener noreferrer">Earlier-rule backtest</a> used a $10 minimum for both directions. Later sale-only rarity flags also kept Buy at $10. Neither validates the current rarity-based Buy and Sell rules.</p>`;
     if (!last) return;
     const sale = host.querySelector('[data-sale]');
     const shipping = host.querySelector('[data-shipping]');

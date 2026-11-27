@@ -1,12 +1,14 @@
 # Card market backtest
 
-**Earlier rule:** The published figures below used a $10 minimum for both Buy
-and Sell. The current `rarity-sell-v1` rule keeps Buy at $10, excludes Common
-and Uncommon from Sell, requires Rare to be at least $1, and allows other known
-printed rarities at any positive Market Price. Alternate-art stars do not
-change the printed C/UC/R restrictions. These figures have not been rerun or
-relabeled as evidence for that newer rule. Current-rule forward tracking is
-reported separately and excludes the older daily flags.
+**Earlier rules:** The published figures below used a $10 minimum for both Buy
+and Sell. The subsequent `rarity-sell-v1` strategy applied rarity-based
+eligibility only to Sell while keeping Buy at $10. The current
+`rarity-trades-v1` strategy applies the same eligibility to **both** directions:
+Common and Uncommon are excluded, Rare must be at least $1, and other known
+printed rarities qualify at any positive Market Price. Alternate-art stars do
+not change the printed C/UC/R restrictions. These figures have not been rerun
+or relabeled as evidence for either newer strategy. Current-rule forward
+tracking is reported separately and excludes flags from both earlier rules.
 
 The historical table uses the original rule names. In the app these flags are
 called Buy candidate, Review for sale, and Hold. The table evaluates the

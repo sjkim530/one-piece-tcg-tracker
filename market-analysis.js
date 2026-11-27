@@ -3,20 +3,24 @@ const OQ_MARKET = (() => {
   'use strict';
 
   const defaultShipping = 500;
-  const buyMinimum = 1000;
   const summaryVersion = 3;
-  const strategy = 'rarity-sell-v1';
-  const sellRarities = new Set(['R', 'SR', 'SEC', 'SP', 'TR', 'L', 'PR', 'DON']);
+  const strategy = 'rarity-trades-v1';
+  const tradeRarities = new Set(['R', 'SR', 'SEC', 'SP', 'TR', 'L', 'PR', 'DON']);
 
   function eligibility(market, effectiveRarity) {
     const rarity = typeof effectiveRarity === 'string' ? effectiveRarity.trim().toUpperCase() : '';
     const positive = Number.isFinite(market) && market > 0;
-    const buyEligible = positive && market >= buyMinimum;
-    const sellEligible = positive && sellRarities.has(rarity) && (rarity !== 'R' || market >= 100);
-    const buyReason = buyEligible ? 'Market Price meets the $10 buy minimum.' : 'Buy candidates require Market Price of at least $10.';
+    const sellEligible = positive && tradeRarities.has(rarity) && (rarity !== 'R' || market >= 100);
+    const buyEligible = sellEligible;
+    const buyReason = !positive ? 'Buy candidates require a positive Market Price.'
+      : rarity === 'C' || rarity === 'UC' ? 'Common and Uncommon cards are excluded from buy candidates, including alternate art.'
+      : !tradeRarities.has(rarity) ? 'Buy candidates need a known printed rarity.'
+      : rarity === 'R' && market < 100 ? 'Rare cards need Market Price of at least $1 for a buy candidate.'
+      : rarity === 'R' ? 'Rare meets the $1 buy-candidate minimum.'
+      : 'This printed rarity qualifies for a buy candidate at any positive Market Price.';
     const sellReason = !positive ? 'Sale reviews require a positive Market Price.'
       : rarity === 'C' || rarity === 'UC' ? 'Common and Uncommon cards are excluded from sale reviews, including alternate art.'
-      : !sellRarities.has(rarity) ? 'Sale reviews need a known printed rarity.'
+      : !tradeRarities.has(rarity) ? 'Sale reviews need a known printed rarity.'
       : rarity === 'R' && market < 100 ? 'Rare cards need Market Price of at least $1 for a sale review.'
       : rarity === 'R' ? 'Rare meets the $1 sale-review minimum.'
       : 'This printed rarity qualifies for a sale review at any positive Market Price.';
