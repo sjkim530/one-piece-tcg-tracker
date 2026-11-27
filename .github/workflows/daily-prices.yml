@@ -17,13 +17,27 @@ jobs:
     # Standard runners and Pages are free for public repositories.
     if: ${{ !github.event.repository.private && github.ref_name == github.event.repository.default_branch }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/scan-reference-cache
+          key: visual-orb-${{ runner.os }}-${{ hashFiles('build-scan-index.py') }}-${{ github.run_id }}
+          restore-keys: |
+            visual-orb-${{ runner.os }}-${{ hashFiles('build-scan-index.py') }}-
+      - name: Prepare artwork matching data
+        run: |
+          python3 -m pip install opencv-python-headless==4.12.0.88
+          python3 tests-scan-index.py
+          if ! python3 build-scan-index.py --cache "$RUNNER_TEMP/scan-reference-cache"; then
+            test -s scan-index/manifest.json || exit 1
+            echo 'Retaining the previously verified artwork index after a source failure.'
+          fi
       - name: Save daily prices and record signals
         run: |
           if [ "${{ github.event_name }}" != push ]; then python3 sync_prices.py; fi
@@ -36,12 +50,14 @@ jobs:
           fi
       - name: Stage the public app
         run: |
-          for file in app.js backup.js card-scan.js collection.js data.js engine.js source.js market-analysis.js price-history.js sw.js; do node --check "$file" || exit 1; done
+          for file in app.js backup.js card-scan.js scan-vision.js scan-vision-worker.js collection.js data.js engine.js source.js market-analysis.js price-history.js sw.js; do node --check "$file" || exit 1; done
           node tests-cache.cjs
           node tests-scan.cjs
+          node tests-camera.cjs
+          node tests-vision.cjs
           node build-market-summary.cjs _site/market-summary.json
-          cp index.html styles.css app.js backup.js card-scan.js collection.js data.js engine.js source.js market-analysis.js price-history.js sw.js manifest.json MARKET-BACKTEST.md _site/
-          cp -r icons price-history _site/
+          cp index.html styles.css app.js backup.js card-scan.js scan-vision.js scan-vision-worker.js collection.js data.js engine.js source.js market-analysis.js price-history.js sw.js manifest.json MARKET-BACKTEST.md _site/
+          cp -r icons price-history scan-index _site/
           test "$(du -sb _site | cut -f1)" -lt 1000000000
       - uses: actions/upload-pages-artifact@v4
         with:

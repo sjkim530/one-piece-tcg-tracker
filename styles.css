@@ -1402,7 +1402,7 @@ button.dialog-close {
 }
 .scan-pick:focus-within { outline: 2px solid var(--sea); outline-offset: 2px; }
 .scan-viewfinder { position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: 12px; background: #111a2c; }
-.scan-viewfinder video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.scan-viewfinder video, .scan-viewfinder canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 
 #scan-results { margin-top: 10px; grid-template-columns: repeat(auto-fit, minmax(116px, 1fr)); }
 #scan-results .catalog-tile { max-width: 168px; }

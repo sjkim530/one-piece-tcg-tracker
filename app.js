@@ -3743,20 +3743,21 @@
     const options = $('#scan-options'), controls = $('#scan-controls');
     const capture = $('#scan-capture'), camera = $('#scan-camera'), file = $('#scan-file');
     const number = $('#scan-number'), star = $('#scan-star');
-    const status = $('#scan-status'), results = $('#scan-results');
-    const more = $('#scan-more');
-    let matchLimit = 24;
-    const quality = $('#scan-quality'), automatic = $('#scan-auto');
-    const sample = document.createElement('canvas');
-    let sampleContext;
-    try { sampleContext = sample.getContext('2d', { willReadFrequently: true }); } catch (_) { /* Manual capture remains available. */ }
-    let stream, job, cameraRequest, previewTimer, recognizer, probeController, probeTask;
-    let cameraSession = 0, capturing = false, previewStartedAt = 0;
-    let lastVideoTime, lastFrameAt = 0, nextProbeAt = 0;
-    let previousMatch = null, analysisUnavailable = false, recognized = null;
-    let previousEvidence = null, missedProbes = 0, autoPaused = false;
-    let autoStartedAt = null, autoPauseMessage = '';
+    const status = $('#scan-status'), results = $('#scan-results'), more = $('#scan-more');
+    const quality = $('#scan-quality'), automatic = $('#scan-auto'), shot = $('#scan-shot');
+    let matchLimit = 24, recognized = null, stream, cameraRequest, previewTimer, job;
+    let cameraSession = 0, analysisTask, lastVideoTime, lastFrameAt = 0, previewStartedAt = 0;
+    let lastAnalysisAt = -Infinity, readySince = null, goodFrames = 0, bestFrame, bestQuality = 0;
+    let retryAfter = 0, visionFailures = 0;
 
+    function showQuality(message, state = 'searching') {
+      if (quality.textContent !== message) quality.textContent = message;
+      quality.dataset.state = state;
+    }
+    function discardBest() {
+      if (bestFrame) bestFrame.width = bestFrame.height = 0;
+      bestFrame = null; bestQuality = 0; readySince = null; goodFrames = 0;
+    }
     function cameraMode(active) {
       dialog.classList.toggle('camera-active', active);
       entry.hidden = options.hidden = active;
@@ -3766,37 +3767,13 @@
     function stopCamera() {
       cameraSession++;
       clearTimeout(previewTimer); previewTimer = null;
-      probeController?.abort(); recognizer?.close();
-      recognizer = probeController = probeTask = null;
-      previousMatch = previousEvidence = null; missedProbes = 0; lastVideoTime = undefined; autoStartedAt = null;
-      sample.width = sample.height = 0;
+      analysisTask?.controller.abort(); analysisTask = null;
+      discardBest(); lastVideoTime = undefined;
       cameraRequest = null;
-      stream?.getTracks().forEach(track => track.stop());
-      stream = null; video.srcObject = null;
+      stream?.getTracks().forEach(track => track.stop()); stream = null; video.srcObject = null;
       camera.disabled = false;
+      shot.hidden = true; shot.width = shot.height = 0;
       cameraMode(false);
-    }
-    function showQuality(message, state) {
-      if (quality.textContent !== message) quality.textContent = message;
-      quality.dataset.state = state;
-    }
-    function showProbeProgress(task) {
-      const elapsed = performance.now() - task.startedAt;
-      showQuality(elapsed >= 10000 ? 'This scan is taking longer. You can tap Scan card or cancel and try a closer photo.'
-        : elapsed >= 5000 ? 'Still reading the card. Keep its text visible; Scan card is available at any time.'
-        : task.phase, 'matching');
-    }
-    function pauseAutomatic(message) {
-      automatic.checked = false; autoPaused = true; autoPauseMessage = message;
-      probeController?.abort(); recognizer?.close();
-      recognizer = probeController = probeTask = null;
-      previousMatch = previousEvidence = null;
-      showQuality(message, 'manual');
-    }
-    function automaticBudgetExpired() {
-      if (!automatic.checked || autoStartedAt == null || performance.now() - autoStartedAt < 20000) return false;
-      pauseAutomatic('Automatic matching paused after 20 seconds. Move closer, then enable Auto capture to retry, or tap Scan card.');
-      return true;
     }
     function frameAvailable() {
       return video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
@@ -3805,8 +3782,12 @@
       return OQ_SCAN.picture(video, { width: video.videoWidth, height: video.videoHeight }, [0, 0, 1, 1],
         Math.min(1, 2400 / Math.max(video.videoWidth, video.videoHeight)));
     }
+    function prepareVision(onProgress = () => {}, signal) {
+      return OQ_VISION.preload({ onProgress, signal });
+    }
+
     function showMatches(evidence) {
-      const keys = new Set(evidence.numbers.map(OQ_SCAN.normalize));
+      const keys = new Set((evidence.visual ? [] : evidence.numbers).map(OQ_SCAN.normalize));
       const ids = new Set((evidence.candidates || []).map(candidate => String(candidate.id)));
       const ranking = new Map((evidence.candidates || []).map((candidate, i) => [String(candidate.id), i]));
       let matches = S.cards.filter(card => keys.size ? keys.has(OQ_SCAN.normalize(card.card_set_id)) : ids.has(String(card.id)))
@@ -3820,7 +3801,7 @@
             <span class="small muted">${esc(card.card_set_id)} · ${esc(badge.label)}</span>
             <span class="catalog-tile-meta">${esc(card.set_name)}</span></span>
         </button>`).join('');
-      const basis = keys.size ? (evidence.recoveredNumbers?.length ? ' Card number recovered from noisy text; check it against the card.' : '')
+      const basis = evidence.visual ? ' Matches are based on the artwork. Confirm the printing; similar treatments may share artwork.' : keys.size ? (evidence.recoveredNumbers?.length ? ' Card number recovered from noisy text; check it against the card.' : '')
         : ' Matches are based on the card name; the number was not confirmed.';
       const starNote = star.checked ? ' Star present: showing only catalog printings marked with a star.' : '';
       const unknown = !keys.size && evidence.readNumbers?.length
@@ -3840,158 +3821,150 @@
       star.checked = evidence.starred === true;
       showMatches(evidence);
     }
-    async function scan(makeFrame) {
+
+    function validTask(task, session) {
+      return job === task && !task.signal.aborted && dialog.open && !document.hidden &&
+        (session == null || session === cameraSession && !!stream);
+    }
+    async function scan(makeFrame, { auto = false, session = null } = {}) {
       job?.abort();
       const task = job = new AbortController();
       let frame;
       recognized = null; results.replaceChildren(); more.hidden = true; number.value = ''; star.checked = false;
-      status.textContent = 'Preparing the scan…';
+      const progress = message => {
+        if (!validTask(task, session)) return;
+        if (auto) showQuality(message, 'matching'); else status.textContent = message;
+      };
       try {
         frame = await makeFrame();
-        if (task.signal.aborted) return;
-        const result = await OQ_SCAN.recognize(frame, task.signal, stage => {
-          if (!task.signal.aborted) status.textContent = stage === 'recognizing text' ? 'Reading card text…' : 'Loading the scanner…';
-        }, { cards: S.cards, isStarred: card => E.rarityBadge(card).star });
-        if (!task.signal.aborted) acceptEvidence(result);
+        if (!validTask(task, session)) return;
+        if (auto) {
+          shot.width = frame.width; shot.height = frame.height;
+          shot.getContext('2d').drawImage(frame, 0, 0); shot.hidden = false;
+        }
+        progress('Photo captured. You can lower the card while it matches…');
+        let evidence;
+        try {
+          await prepareVision(stage => progress(stage === 'runtime' ? 'Photo captured. You can lower the card while the matcher prepares…'
+            : stage === 'index' ? 'Photo captured. You can lower the card while matching data loads…' : 'Photo captured. Matching the artwork…'), task.signal);
+          if (!validTask(task, session)) return;
+          evidence = await OQ_VISION.match(frame, { signal: task.signal });
+          const loadedIds = new Set(S.cards.map(card => String(card.id)));
+          evidence = { ...evidence, visual: true, numbers: [], readNumbers: [], starred: null,
+            candidates: evidence.confident ? (evidence.candidates || []).filter(candidate => loadedIds.has(String(candidate.id))) : [] };
+          evidence.totalCandidates = evidence.candidates.length;
+        } catch (error) {
+          if (task.signal.aborted) return;
+          if (auto) {
+            visionFailures++; retryAfter = performance.now() + Math.min(15000, 2000 * 2 ** Math.min(visionFailures, 3));
+            progress('Artwork matching could not load. Reading the captured card text…');
+          }
+        }
+        if (!validTask(task, session)) return;
+        if (!evidence?.candidates.length) {
+          progress('No artwork match yet. Reading the card text…');
+          const textJob = new AbortController(), abortText = () => textJob.abort();
+          task.signal.addEventListener('abort', abortText, { once: true });
+          const deadline = setTimeout(abortText, auto ? 8000 : 12000);
+          const reader = OQ_SCAN.createRecognizer(textJob.signal, () => {}, { cards: S.cards, isStarred: card => E.rarityBadge(card).star });
+          try {
+            const textEvidence = await reader.recognize(frame, { probe: true, enhanced: true, confirm: true });
+            if (!auto || textEvidence.numbers.length || textEvidence.strongName) evidence = textEvidence;
+          } catch (error) { if (task.signal.aborted) return; }
+          finally { clearTimeout(deadline); task.signal.removeEventListener('abort', abortText); reader.close(); }
+        }
+        if (!validTask(task, session)) return;
+        if (evidence?.candidates.length) {
+          if (stream) stopCamera();
+          acceptEvidence(evidence); status.focus({ preventScroll: true });
+        } else if (auto) {
+          retryAfter = performance.now() + 2500;
+          showQuality('Photo captured, but no reliable match yet. Try another angle; Auto capture is still on.', 'searching');
+        } else acceptEvidence(evidence || { numbers: [], readNumbers: [], candidates: [] });
       } catch (_) {
-        if (!task.signal.aborted) status.textContent = 'Could not scan this photo. Try again or enter the card number below.';
+        if (validTask(task, session)) {
+          if (auto) {
+            retryAfter = performance.now() + 2500;
+            showQuality('Could not match that photo. Auto capture is still on; try another angle.', 'searching');
+          } else status.textContent = 'Could not scan this photo. Try again or enter the card number below.';
+        }
       } finally {
         if (frame) frame.width = frame.height = 0;
-        if (job === task) job = null;
+        if (job === task) {
+          job = null;
+          if (stream) { shot.hidden = true; shot.width = shot.height = 0; discardBest(); }
+        }
       }
     }
-    async function probe(session) {
-      if (probeTask || !automatic.checked || !stream || !frameAvailable()) return;
-      const enhanced = missedProbes >= 2 || previousEvidence?.enhanced === true;
-      if (autoStartedAt == null) autoStartedAt = performance.now();
-      const task = probeTask = { startedAt: performance.now(), phase: enhanced
-        ? 'Trying a more detailed scan…' : 'Looking for a card number or name…' };
-      let frame, usedRecognizer;
+    async function analyze(session) {
+      const task = analysisTask = { controller: new AbortController() };
+      let sample, candidateFrame;
       try {
-        frame = fullFrame();
-        if (!recognizer) {
-          probeController = new AbortController();
-          recognizer = OQ_SCAN.createRecognizer(probeController.signal, stage => {
-            if (session !== cameraSession || !automatic.checked || !probeTask) return;
-            probeTask.phase = stage === 'recognizing text' ? (missedProbes >= 2
-              ? 'Trying a more detailed scan…' : 'Looking for a card number or name…')
-              : 'Loading the scanner. Keep one card visible…';
-            showProbeProgress(probeTask);
-          }, { cards: S.cards, isStarred: card => E.rarityBadge(card).star });
+        candidateFrame = fullFrame();
+        sample = OQ_SCAN.picture(candidateFrame, candidateFrame, [0, 0, 1, 1],
+          Math.min(1, 720 / Math.max(candidateFrame.width, candidateFrame.height)));
+        const result = await OQ_VISION.analyze(sample, { signal: task.controller.signal });
+        if (analysisTask !== task || session !== cameraSession || !automatic.checked || job || document.hidden || !dialog.open) return;
+        visionFailures = 0;
+        if (!result.ready) { discardBest(); showQuality(result.message || 'Show one whole card anywhere in view.'); return; }
+        goodFrames++;
+        if (readySince == null) readySince = performance.now();
+        if (!bestFrame || result.quality > bestQuality) {
+          if (bestFrame) bestFrame.width = bestFrame.height = 0;
+          bestFrame = candidateFrame; candidateFrame = null; bestQuality = result.quality;
         }
-        usedRecognizer = recognizer;
-        showProbeProgress(task);
-        const evidence = await usedRecognizer.recognize(frame, { probe: true, enhanced });
-        if (session !== cameraSession || !dialog.open || document.hidden || !automatic.checked) return;
-        if (automaticBudgetExpired()) return;
-        // Two separate advancing camera observations must agree. OCR passes over
-        // the same frozen frame do not count as separate observations.
-        const signature = evidence.numbers.length ? 'number:' + [...evidence.numbers].sort().join(',')
-          : evidence.name && !evidence.readNumbers.length ? 'name:' + evidence.name : null;
-        if (signature && previousMatch === signature) {
-          // A high-resolution pass also checks the printing star, even when
-          // the smaller probes already read the card number.
-          const alreadyDetailed = evidence.enhanced && previousEvidence?.enhanced;
-          const confirmedStar = evidence.numbers.length && evidence.starred === true && previousEvidence?.starred === true;
-          task.phase = alreadyDetailed || confirmedStar ? 'Card identified. Preparing possible printings…'
-            : 'Card found. Checking its number and printing star…';
-          showProbeProgress(task);
-          // Two color-enhanced name observations already support a candidate
-          // list. Repeating the entire slow manual pipeline cannot prove a
-          // printing from unreadable text, so leave the uncertainty visible.
-          const finalEvidence = alreadyDetailed || confirmedStar ? evidence : await usedRecognizer.recognize(frame, { probe: true, enhanced: true, confirm: true });
-          if (session !== cameraSession || document.hidden || !automatic.checked) return;
-          if (automaticBudgetExpired()) return;
-          if (evidence.numbers.length && finalEvidence.numbers.length &&
-              !finalEvidence.numbers.some(code => evidence.numbers.includes(code))) {
-            previousMatch = null;
-            showQuality('A different card was read. Keep one card visible to confirm.', 'searching');
-            return;
-          }
-          if (!finalEvidence.numbers.length && (finalEvidence.readNumbers.length || !finalEvidence.candidates.length ||
-              !finalEvidence.name || finalEvidence.name !== evidence.name)) {
-            previousMatch = null;
-            showQuality(finalEvidence.readNumbers.length
-              ? 'Card number read, but it is not in the catalog. Try Scan card to review.'
-              : 'Could not confirm the card. Keep it visible or try Scan card.', 'searching');
-            return;
-          }
-          capturing = true;
-          stopCamera(); acceptEvidence(finalEvidence); status.focus({ preventScroll: true });
-          return;
+        showQuality('Card visible. Taking a photo…', 'confirming');
+        if (goodFrames >= 2 && performance.now() - readySince >= 400) {
+          const captured = bestFrame; bestFrame = null;
+          discardBest(); scan(() => captured, { auto: true, session });
         }
-        previousMatch = signature;
-        previousEvidence = signature ? evidence : null;
-        missedProbes = signature ? 0 : missedProbes + 1;
-        if (missedProbes >= 4) {
-          pauseAutomatic('Could not identify this view automatically. Move closer, then enable Auto capture to retry, or tap Scan card.');
-          return;
-        }
-        nextProbeAt = performance.now() + (signature ? 350 : 1800);
-        showQuality(signature ? 'Possible card found. Keep it visible to confirm…' : evidence.readNumbers.length
-          ? 'Card number read, but it is not in the catalog. Try Scan card to review.'
-          : 'No match yet. Move closer or tilt to make the text clearer.', signature ? 'confirming' : 'searching');
       } catch (_) {
-        if (session === cameraSession && automatic.checked && recognizer === usedRecognizer) {
-          analysisUnavailable = true;
-          showQuality('Automatic matching unavailable · Tap Scan card to retry', 'manual');
+        if (analysisTask === task && !task.controller.signal.aborted && session === cameraSession) {
+          visionFailures++; retryAfter = performance.now() + Math.min(15000, 2000 * 2 ** Math.min(visionFailures, 3));
+          showQuality('Automatic detection could not load. Retrying automatically; Scan card is available.', 'manual');
         }
       } finally {
-        if (frame) frame.width = frame.height = 0;
-        if (probeTask === task) {
-          probeTask = null;
-          if (nextProbeAt < performance.now()) nextProbeAt = performance.now() + 1800;
-        }
+        if (sample) sample.width = sample.height = 0;
+        if (candidateFrame) candidateFrame.width = candidateFrame.height = 0;
+        if (analysisTask === task) analysisTask = null;
       }
     }
     function preview(session) {
       if (session !== cameraSession || !stream || !dialog.open || document.hidden) return;
-      const now = performance.now(); capture.disabled = !frameAvailable();
-      automaticBudgetExpired();
-      if (probeTask) showProbeProgress(probeTask);
-      if (!frameAvailable()) {
-        previousMatch = null;
-        showQuality(now - previewStartedAt < 3000 ? 'Starting camera preview…' :
-          'No camera frames yet. Cancel and reopen the camera, or choose a photo.', 'warming');
-      } else if (!sampleContext || analysisUnavailable) {
-        showQuality('Automatic matching unavailable · Tap Scan card when ready', 'manual');
-      } else if (lastVideoTime === video.currentTime) {
-        if (now - lastFrameAt > 1500) {
-          previousMatch = null;
-          showQuality('Camera preview paused. Cancel and reopen the camera, or choose a photo.', 'warming');
-        }
-      } else {
-        lastVideoTime = video.currentTime; lastFrameAt = now;
-        try {
-          sample.width = 160; sample.height = Math.max(80, Math.round(160 * video.videoHeight / video.videoWidth));
-          sampleContext.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, sample.width, sample.height);
-          const result = OQ_SCAN.analyzeFrame(sampleContext.getImageData(0, 0, sample.width, sample.height));
-          if (result.state !== 'ready') {
-            previousMatch = null;
-            if (!probeTask) showQuality(result.message, result.state);
-          } else if (!automatic.checked) {
-            showQuality(autoPaused ? autoPauseMessage
-              : 'Auto capture off · Tap Scan card when ready', 'manual');
-          } else if (!probeTask && now >= nextProbeAt) {
-            probe(session);
+      const now = performance.now(); capture.disabled = !frameAvailable() || !!job;
+      if (!job) {
+        if (!frameAvailable()) showQuality(now - previewStartedAt < 3000 ? 'Starting camera preview…'
+          : 'No camera frames yet. Reopen the camera or choose a photo.', 'warming');
+        else if (lastVideoTime === video.currentTime) {
+          if (now - lastFrameAt > 1500) { discardBest(); showQuality('Camera preview paused. Reopen the camera or choose a photo.', 'warming'); }
+        } else {
+          lastVideoTime = video.currentTime; lastFrameAt = now;
+          if (!automatic.checked) showQuality('Auto capture off · Tap Scan card when ready', 'manual');
+          else if (!analysisTask && now >= retryAfter && now - lastAnalysisAt >= 240) {
+            lastAnalysisAt = now; analyze(session);
           }
-        } catch (_) {
-          analysisUnavailable = true;
-          showQuality('Automatic matching unavailable · Tap Scan card when ready', 'manual');
         }
       }
       previewTimer = setTimeout(() => preview(session), 160);
     }
     on('#scan-open', 'click', () => {
+      job?.abort(); stopCamera();
       recognized = null; matchLimit = 24; more.hidden = true;
       number.value = status.textContent = ''; star.checked = false; results.replaceChildren();
       $('.scan-content', dialog).scrollTop = 0; dialog.showModal();
+      const opening = cameraSession;
+      const updatePreparation = message => {
+        if (dialog.open && cameraSession === opening && !stream && !job) status.textContent = message;
+      };
+      prepareVision(stage => updatePreparation(stage === 'index' ? 'Preparing artwork matching for this device. This is cached after the first download…'
+        : 'Preparing the image matcher…')).then(() => updatePreparation('Image matcher ready. Use the camera or choose a photo.'))
+        .catch(() => updatePreparation('Image matching could not load. Try a photo or enter the card number.'));
     });
     function closeScanner() { job?.abort(); stopCamera(); file.value = ''; dialog.close(); }
     on('#scan-close', 'click', closeScanner);
     dialog.addEventListener('cancel', event => { event.preventDefault(); closeScanner(); });
     camera.addEventListener('click', async () => {
-      job?.abort(); stopCamera(); capturing = false;
+      job?.abort(); stopCamera(); visionFailures = 0; retryAfter = 0; lastAnalysisAt = -Infinity;
       const request = cameraRequest = {}; camera.disabled = true; status.textContent = 'Waiting for camera access…';
       try {
         const next = await navigator.mediaDevices.getUserMedia({ video: {
@@ -4000,15 +3973,14 @@
         stream = next; video.srcObject = stream;
         next.getVideoTracks()[0]?.addEventListener('ended', () => {
           if (stream !== next) return;
-          stopCamera(); status.textContent = 'Camera disconnected. Reopen it or choose a photo.'; status.focus();
+          job?.abort(); stopCamera(); status.textContent = 'Camera disconnected. Reopen it or choose a photo.'; status.focus();
         }, { once: true });
         cameraMode(true); previewStartedAt = lastFrameAt = performance.now();
-        nextProbeAt = 0; analysisUnavailable = false; autoPaused = false;
-        showQuality('Starting camera preview…', 'warming'); $('#scan-cancel-camera').focus({ preventScroll: true });
+        showQuality('Preparing automatic card detection…', 'warming'); $('#scan-cancel-camera').focus({ preventScroll: true });
         try {
           Promise.resolve(video.play()).catch(() => {
             if (stream !== next || !dialog.open || cameraRequest !== request) return;
-            stopCamera(); status.textContent = 'Camera preview could not start. Tap Use camera to retry or choose a photo.';
+            job?.abort(); stopCamera(); status.textContent = 'Camera preview could not start. Tap Use camera to retry or choose a photo.';
           });
         } catch (_) { stopCamera(); status.textContent = 'Camera preview could not start. Tap Use camera to retry or choose a photo.'; return; }
         preview(cameraSession);
@@ -4016,30 +3988,26 @@
         if (dialog.open && cameraRequest === request) { camera.disabled = false; status.textContent = 'Camera unavailable. Choose a photo or enter a card number.'; }
       }
     });
-    on('#scan-cancel-camera', 'click', () => { stopCamera(); status.textContent = ''; camera.focus(); });
-    function captureFrame() {
-      if (capturing || !stream || !dialog.open || document.hidden || !frameAvailable()) return;
-      capturing = true;
+    on('#scan-cancel-camera', 'click', () => { job?.abort(); stopCamera(); status.textContent = ''; camera.focus(); });
+    capture.addEventListener('click', () => {
+      if (job || !stream || !dialog.open || document.hidden || !frameAvailable()) return;
       let frame;
-      try { frame = fullFrame(); }
-      catch (_) { capturing = false; showQuality('Could not capture this frame. Try Scan card again.', 'manual'); return; }
+      try { frame = fullFrame(); } catch (_) { showQuality('Could not capture this frame. Try again.'); return; }
       stopCamera(); scan(() => frame); status.focus({ preventScroll: true });
-    }
-    capture.addEventListener('click', captureFrame);
+    });
     automatic.addEventListener('change', () => {
-      previousMatch = previousEvidence = null; missedProbes = 0; autoPaused = false; autoStartedAt = null;
-      if (!automatic.checked) {
-        probeController?.abort(); recognizer?.close(); recognizer = null; probeController = null;
-        showQuality('Auto capture off · Tap Scan card when ready', 'manual');
-      } else { analysisUnavailable = false; nextProbeAt = 0; }
+      discardBest(); analysisTask?.controller.abort(); analysisTask = null;
+      if (job && stream) { job.abort(); job = null; shot.hidden = true; shot.width = shot.height = 0; }
+      retryAfter = 0;
+      if (!automatic.checked) showQuality('Auto capture off · Tap Scan card when ready', 'manual');
     });
     function suspendScanner() {
-      if (job && !stream && !cameraRequest) { job.abort(); status.textContent = 'Scan paused. Retake the photo or enter a card number.'; }
-      if (!stream && !cameraRequest) return;
-      stopCamera(); job?.abort(); status.textContent = 'Camera paused. Tap Use camera to resume.';
+      const active = job || stream || cameraRequest;
+      job?.abort(); stopCamera();
+      if (active) status.textContent = 'Camera paused. Tap Use camera to resume.';
     }
     document.addEventListener('visibilitychange', () => { if (document.hidden) suspendScanner(); });
-    window.addEventListener('pagehide', () => { job?.abort(); suspendScanner(); });
+    window.addEventListener('pagehide', suspendScanner);
     dialog.addEventListener('close', () => { job?.abort(); stopCamera(); });
     file.addEventListener('change', () => {
       const photo = file.files[0]; file.value = ''; if (!photo) return;
@@ -4050,22 +4018,18 @@
       });
     });
     on('#scan-lookup', 'submit', event => {
-      event.preventDefault(); job?.abort(); stopCamera();
-      matchLimit = 24;
+      event.preventDefault(); job?.abort(); stopCamera(); matchLimit = 24;
       recognized = { numbers: [number.value], readNumbers: [number.value], candidates: [], starred: star.checked };
       showMatches(recognized);
     });
     star.addEventListener('change', () => { if (recognized) showMatches(recognized); });
-    more.addEventListener('click', () => {
-      if (!recognized) return;
-      matchLimit += 24;
-      showMatches(recognized);
-    });
+    more.addEventListener('click', () => { if (recognized) { matchLimit += 24; showMatches(recognized); } });
     results.addEventListener('click', event => {
       const match = event.target.closest('[data-key]'); if (!match) return;
       closeScanner(); openCatalogCard(match.dataset.key);
     });
   }
+
 
   function wireCatalog() {
     wireArtworkViewer();

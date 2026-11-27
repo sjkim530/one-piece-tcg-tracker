@@ -41,7 +41,7 @@
 <link rel="apple-touch-icon" href="icons/vault-192.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/vault-192.png">
 
-<link rel="stylesheet" href="styles.css?v=3.8.2">
+<link rel="stylesheet" href="styles.css?v=3.9.0">
 </head>
 <body>
 
@@ -147,6 +147,7 @@
         <p class="scan-quality" id="scan-quality" role="status" aria-live="polite" hidden>Starting camera preview…</p>
         <div class="scan-viewfinder" id="scan-viewfinder" hidden>
           <video id="scan-video" autoplay playsinline muted aria-label="Camera preview"></video>
+          <canvas id="scan-shot" aria-label="Captured card photo" hidden></canvas>
         </div>
         <div id="scan-entry">
           <p class="small muted scan-privacy">Show one whole card anywhere in the camera view. Photos are scanned on your device and discarded. Confirm the exact artwork from the matches.</p>
@@ -668,8 +669,9 @@ if ('serviceWorker' in navigator) {
 <script src="source.js?v=3.7.6"></script>
 <script src="price-history.js?v=3.7.2"></script>
 <script src="market-analysis.js?v=3.7.0"></script>
-<script src="card-scan.js?v=3.8.2"></script>
+<script src="card-scan.js?v=3.9.0"></script>
+<script src="scan-vision.js?v=3.9.0"></script>
 <script src="backup.js?v=3.5.0"></script>
-<script src="app.js?v=3.8.2"></script>
+<script src="app.js?v=3.9.0"></script>
 </body>
 </html>
