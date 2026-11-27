@@ -1,6 +1,6 @@
 /* Cache the exact app shell for offline use. Data uses HTTP revalidation. */
 const CACHE_PREFIX = 'optcg-quant-';
-const CACHE = CACHE_PREFIX + 'v38';
+const CACHE = CACHE_PREFIX + 'v39';
 // Public, content-hashed reference data survives small app-shell updates.
 const ARTWORK_CACHE = 'optcg-artwork-index-v1';
 const scope = new URL(self.registration.scope);

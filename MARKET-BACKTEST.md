@@ -1,5 +1,13 @@
 # Card market backtest
 
+**Earlier rule:** The published figures below used a $10 minimum for both Buy
+and Sell. The current `rarity-sell-v1` rule keeps Buy at $10, excludes Common
+and Uncommon from Sell, requires Rare to be at least $1, and allows other known
+printed rarities at any positive Market Price. Alternate-art stars do not
+change the printed C/UC/R restrictions. These figures have not been rerun or
+relabeled as evidence for that newer rule. Current-rule forward tracking is
+reported separately and excludes the older daily flags.
+
 The historical table uses the original rule names. In the app these flags are
 called Buy candidate, Review for sale, and Hold. The table evaluates the
 full-history rules. The app also offers a limited-evidence Hold when shorter
@@ -37,4 +45,7 @@ stronger 90-day result. Buy flags are leads for collection purchases, with
 negative median resale estimates at both horizons.
 
 Run `node backtest-market.cjs` with the local `mockapi/` catalog fixture and
-generated `price-history/` directory to reproduce the figures.
+generated `price-history/` directory to evaluate the **current** rule. Its
+console output identifies the strategy and uses the fixture's current printed
+rarities; it does not reproduce the earlier-rule figures above or establish
+what rarity metadata was known historically.

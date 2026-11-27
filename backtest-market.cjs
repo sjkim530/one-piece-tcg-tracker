@@ -1,7 +1,7 @@
 // Run from any directory with node backtest-market.cjs.
 const fs = require('node:fs');
 const path = require('node:path');
-const { analyze, saleProceeds, defaultShipping } = require('./market-analysis.js');
+const { analyze, strategy, saleProceeds, defaultShipping } = require('./market-analysis.js');
 
 const horizons = [30, 90];
 const results = Object.fromEntries(horizons.map(horizon => [horizon, {
@@ -19,12 +19,14 @@ async function run() {
     fetch: async url => new Response(fs.readFileSync(path.join(__dirname, url)))
   });
   context.window = context;
-  for (const file of ['data.js', 'source.js']) {
+  for (const file of ['data.js', 'engine.js', 'source.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, file), 'utf8'), context, {filename: file});
   }
   const sets = await context.SRC.buildSets(vm.runInContext('OQ_DATA.SETS', context));
   const { cards, failed } = await context.SRC.loadAll(sets);
   if (failed.length) throw new Error('The backtest requires the complete local catalog fixture.');
+  const engine = vm.runInContext('OQ_ENGINE', context);
+  const rarity = new Map(cards.map(card => [String(card.id), engine.rarityBadge(card).text]));
   const known = new Set(cards.flatMap(card => [
     card.id + ':' + card.printing,
     ...(card.alt_printing ? [card.id + ':' + card.alt_printing.printing] : [])
@@ -43,7 +45,7 @@ async function run() {
       for (let i = 180; i < points.length; i++) {
         const [day, market, low] = points[i];
         if (day % 7 !== 4) continue; // Mondays
-        const { call, evidence } = analyze(points.slice(0, i + 1), day);
+        const { call, evidence } = analyze(points.slice(0, i + 1), day, rarity.get(key.split(':')[0]));
         if (evidence !== 'full') continue;
         for (const horizon of horizons) {
           const later = byDay.get(day + horizon);
@@ -80,6 +82,7 @@ async function run() {
       });
     }
   }
+  console.log('Strategy:', strategy, '· Current catalog rarity metadata applied to historical quotes; not a frozen prospective validation.');
   console.table(report);
   console.log('Excluded', excluded);
 }

@@ -1,7 +1,7 @@
 /* Freeze daily candidates and their comparison groups before outcomes exist. */
 const fs = require('node:fs');
 const path = require('node:path');
-const { analyze, saleProceeds, defaultShipping } = require('./market-analysis');
+const { analyze, strategy, saleProceeds, defaultShipping } = require('./market-analysis');
 
 const archive = path.join(__dirname, 'price-history');
 const ledgerDir = path.join(__dirname, 'signal-ledger');
@@ -27,9 +27,13 @@ function quoteOn(key, day) {
 
 const ledgerPath = path.join(ledgerDir, today + '.json');
 const metadata = path.join(archive, 'singles.json');
+const rarityMetadata = JSON.parse(fs.readFileSync(path.join(__dirname, 'card-metadata.json')));
+if (rarityMetadata.version !== 1 || !Number.isFinite(Date.parse(sourceUpdatedAt)) || Date.parse(rarityMetadata.sourceUpdatedAt) !== Date.parse(sourceUpdatedAt) || !rarityMetadata.cards) {
+  throw new Error('Current card rarity metadata is required to track new market signals');
+}
 if (!fs.existsSync(ledgerPath) && fs.existsSync(metadata)) {
   const catalog = JSON.parse(fs.readFileSync(metadata));
-  if (catalog.sourceUpdatedAt === sourceUpdatedAt) {
+  if (Date.parse(catalog.sourceUpdatedAt) === Date.parse(sourceUpdatedAt)) {
     const groups = new Map();
     const calls = [];
     for (const [key, quotes] of series) {
@@ -41,12 +45,12 @@ if (!fs.existsSync(ledgerPath) && fs.existsSync(metadata)) {
       groups.get(group).push([key, price]);
       const points = [];
       for (let i = quotes.length - 3; i >= 0; i -= 3) points.push(quotes.slice(i, i + 3));
-      const { call } = analyze(points, today);
+      const { call } = analyze(points, today, rarityMetadata.cards[key.split(':')[0]]?.rarity);
       if (call === 'Buy Now' || call === 'Sell Now') calls.push({ key, call, price, low, group });
     }
     const used = new Set(calls.map(row => row.group));
     const peers = Object.fromEntries([...groups].filter(([group]) => used.has(group)));
-    fs.writeFileSync(ledgerPath, JSON.stringify({ version: 1, day: today, calls, peers }) + '\n', { flag: 'wx' });
+    fs.writeFileSync(ledgerPath, JSON.stringify({ version: 1, strategy, day: today, calls, peers }) + '\n', { flag: 'wx' });
   }
 }
 
@@ -56,9 +60,11 @@ function median(numbers) {
   return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
 }
 
-const days = fs.readdirSync(ledgerDir).filter(name => /^\d+\.json$/.test(name)).sort()
+const allDays = fs.readdirSync(ledgerDir).filter(name => /^\d+\.json$/.test(name)).sort()
   .map(name => JSON.parse(fs.readFileSync(path.join(ledgerDir, name))))
   .filter(snapshot => snapshot.version === 1);
+const days = allDays.filter(snapshot => snapshot.strategy === strategy);
+const legacyDays = allDays.length - days.length;
 const results = [];
 for (const horizon of [30, 90]) {
   for (const call of ['Buy Now', 'Sell Now']) {
@@ -113,5 +119,5 @@ for (const horizon of [30, 90]) {
 }
 
 fs.writeFileSync(reportPath, JSON.stringify({
-  version: 1, sourceUpdatedAt, start: days[0]?.day ?? null, trackedDays: days.length, results
+  version: 2, strategy, sourceUpdatedAt, start: days[0]?.day ?? null, trackedDays: days.length, legacyDays, results
 }) + '\n');

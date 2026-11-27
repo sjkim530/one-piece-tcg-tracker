@@ -4,7 +4,24 @@ const OQ_MARKET = (() => {
 
   const defaultShipping = 500;
   const buyMinimum = 1000;
-  const summaryVersion = 2;
+  const summaryVersion = 3;
+  const strategy = 'rarity-sell-v1';
+  const sellRarities = new Set(['R', 'SR', 'SEC', 'SP', 'TR', 'L', 'PR', 'DON']);
+
+  function eligibility(market, effectiveRarity) {
+    const rarity = typeof effectiveRarity === 'string' ? effectiveRarity.trim().toUpperCase() : '';
+    const positive = Number.isFinite(market) && market > 0;
+    const buyEligible = positive && market >= buyMinimum;
+    const sellEligible = positive && sellRarities.has(rarity) && (rarity !== 'R' || market >= 100);
+    const buyReason = buyEligible ? 'Market Price meets the $10 buy minimum.' : 'Buy candidates require Market Price of at least $10.';
+    const sellReason = !positive ? 'Sale reviews require a positive Market Price.'
+      : rarity === 'C' || rarity === 'UC' ? 'Common and Uncommon cards are excluded from sale reviews, including alternate art.'
+      : !sellRarities.has(rarity) ? 'Sale reviews need a known printed rarity.'
+      : rarity === 'R' && market < 100 ? 'Rare cards need Market Price of at least $1 for a sale review.'
+      : rarity === 'R' ? 'Rare meets the $1 sale-review minimum.'
+      : 'This printed rarity qualifies for a sale review at any positive Market Price.';
+    return { rarity, buyEligible, sellEligible, buyReason, sellReason };
+  }
 
   function percentile(values, fraction) {
     const sorted = values.slice().sort((a, b) => a - b);
@@ -60,13 +77,15 @@ const OQ_MARKET = (() => {
     };
   }
 
-  function analyze(points, today) {
+  function analyze(points, today, effectiveRarity) {
     const last = points.at(-1);
     const insufficient = reason => ({ call: 'Insufficient data', reason });
     if (!last || last[0] > today || today - last[0] > 3) {
       return insufficient('Wait for a Market Price from the last four UTC dates.');
     }
     const [day, market, low] = last;
+    if (!(Number.isFinite(market) && market > 0)) return insufficient('Wait for a positive Market Price.');
+    const policy = eligibility(market, effectiveRarity);
 
     const history = [];
     const quarter = [];
@@ -102,7 +121,7 @@ const OQ_MARKET = (() => {
       if (!(low > 0)) reason = 'A recent market trend is visible, but there is no current lowest listing. Check available copies and their condition before trading.';
       else if (momentum >= .05) reason = 'Recent prices are rising. If you already own it, keep it for now. If you’re buying, wait for a pullback or more price history.';
       else if (momentum <= -.05) reason = 'Recent prices are falling. Wait for prices to stabilize before buying. Review recent sold listings if you’re considering an exit.';
-      return { call: 'Hold', reason, day, market, low, momentum, horizon, evidence: 'limited' };
+      return { ...policy, call: 'Hold', reason, day, market, low, momentum, horizon, evidence: 'limited' };
     }
 
     const recentMedian = percentile(recent, .5);
@@ -123,33 +142,40 @@ const OQ_MARKET = (() => {
     for (const rule of [buy, sell]) {
       rule.listingMet = low >= rule.minListing && low <= rule.maxListing;
     }
-    const eligible = market >= buyMinimum && buyPrice < sellPrice;
+    const distinct = buyPrice < sellPrice;
+    const buyEligible = policy.buyEligible && distinct;
+    const sellEligible = policy.sellEligible && distinct;
+    buy.eligible = buyEligible; sell.eligible = sellEligible;
+    const eligible = buyEligible || sellEligible;
     let call = 'Hold';
     let reason = 'Keep the card or wait for a better entry. The price and trend do not support making a trade today.';
-    if (market < buyMinimum) {
-      reason = 'Keep it or bundle it with other cards if you’re selling. On a card below $10, fees and shipping can outweigh typical price moves.';
-    } else if (!eligible) {
+    if (!distinct) {
       reason = 'Prices have stayed too close together to justify a trade. Wait for a meaningful move.';
-    } else if (buy.priceMet && buy.trendMet && buy.listingMet) {
+    } else if (!eligible) {
+      reason = policy.buyReason + ' ' + policy.sellReason;
+    } else if (buyEligible && buy.priceMet && buy.trendMet && buy.listingMet) {
       call = 'Buy Now';
       reason = 'Market Price is low in both historical ranges, momentum has turned up, and the lowest listing is 5% to 50% below market.';
-    } else if (sell.priceMet && sell.trendMet && sell.listingMet) {
+    } else if (sellEligible && sell.priceMet && sell.trendMet && sell.listingMet) {
       call = 'Sell Now';
       reason = 'Market Price is high in both historical ranges, momentum has turned down, and the lowest listing is close enough to market to support the price comparison.';
-    } else if (buy.priceMet && buy.trendMet) {
+    } else if (buyEligible && buy.priceMet && buy.trendMet) {
       reason = 'Watch for a buy. The price and rebound qualify, but the lowest listing is outside the range. Check the exact printing and condition.';
-    } else if (sell.priceMet && sell.trendMet) {
+    } else if (sellEligible && sell.priceMet && sell.trendMet) {
       reason = 'Review your exit price. The trend supports a sale review, but current listings don’t corroborate Market Price. Check recent sales first.';
-    } else if (buy.priceMet) {
+    } else if (buyEligible && buy.priceMet) {
       reason = 'Wait for an entry. The card is cheap relative to its history. Look for a sustained rebound and a qualifying listing before buying.';
-    } else if (sell.priceMet) {
+    } else if (sellEligible && sell.priceMet) {
       reason = 'Hold at the upper end of the range. If you’re considering selling, watch for a downturn and check current listings.';
     } else if (momentum >= .05) {
       reason = 'Keep it for now. Recent prices are rising, so let the price come down before buying.';
     } else if (momentum <= -.05) {
       reason = 'Wait for prices to stabilize before buying. If you own it, compare recent sold listings before lowering your asking price.';
     }
-    return { call, reason, day, market, low, momentum, horizon: 30, evidence: 'full', year, recentRange, eligible, buy, sell };
+    return { call, reason, day, market, low, momentum, horizon: 30, evidence: 'full', year, recentRange,
+      ...policy, buyEligible, sellEligible, eligible,
+      buyReason: distinct ? policy.buyReason : 'Buy candidates need distinct buy and sell thresholds.',
+      sellReason: distinct ? policy.sellReason : 'Sale reviews need distinct buy and sell thresholds.', buy, sell };
   }
 
   function marketWindow(points, day) {
@@ -220,7 +246,7 @@ const OQ_MARKET = (() => {
     return analyzeSealedQuote(sealedQuote(points), today, singlesMoves, singlesCount);
   }
 
-  return { analyze, analyzeSealed, analyzeSealedQuote, sealedQuote, marketWindow, saleProceeds, defaultShipping, summaryVersion,
+  return { analyze, eligibility, strategy, analyzeSealed, analyzeSealedQuote, sealedQuote, marketWindow, saleProceeds, defaultShipping, summaryVersion,
     ebaySoldSearch, ebayItemId, summarizeComps, watchTargets };
 })();
 

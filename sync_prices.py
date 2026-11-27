@@ -3,12 +3,16 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
+import hashlib
 from pathlib import Path
+import subprocess
 import time
 from urllib.request import Request, urlopen
 
 
 HISTORY = Path(__file__).resolve().parent / "price-history"
+ROOT = Path(__file__).resolve().parent
+METADATA = ROOT / "card-metadata.json"
 BASE_URL = "https://tcgcsv.com"
 CATEGORY = "/tcgplayer/68"
 BUCKETS = 256
@@ -55,15 +59,15 @@ def collect_quotes():
         raise ValueError("TCGCSV returned no One Piece groups")
     buckets = [{} for _ in range(BUCKETS)]
     singles = {}
+    metadata = {}
     for group in groups:
         time.sleep(.15)
         for row in results(f"{CATEGORY}/{group}/products"):
-            fields = {entry["name"]: entry["value"] for entry in row.get("extendedData", [])}
-            card_type = (fields.get("Card Type") or fields.get("CardType") or "").strip()
-            number = (fields.get("Number") or "").strip()
-            if card_type or number:
-                category = card_type or "Other single"
-                singles[str(int(row["productId"]))] = category
+            product = single_metadata(row)
+            if product:
+                product_id, card_type, card = product
+                singles[product_id] = card_type or "Other single"
+                metadata[product_id] = card
         for row in results(f"{CATEGORY}/{group}/prices"):
             market = cents(row.get("marketPrice"))
             if market is None:
@@ -75,7 +79,55 @@ def collect_quotes():
         raise ValueError("TCGCSV returned no One Piece prices")
     if not singles:
         raise ValueError("TCGCSV returned no classified One Piece singles")
-    return buckets, singles
+    return buckets, singles, metadata
+
+
+def single_metadata(row):
+    fields = {entry["name"]: entry["value"] for entry in row.get("extendedData", [])}
+    card_type = (fields.get("Card Type") or fields.get("CardType") or "").strip()
+    number = (fields.get("Number") or "").strip()
+    if not (card_type or number):
+        return None
+    card = {"card_name": row.get("name") or "", "rarity": (fields.get("Rarity") or "").strip(),
+            "card_type": card_type}
+    return str(int(row["productId"])), card_type, card
+
+
+def collect_metadata():
+    """Repair missing rarity data without rewriting an already-saved quote day."""
+    groups = sorted({int(row["groupId"]) for row in results(CATEGORY + "/groups")})
+    if not groups:
+        raise ValueError("TCGCSV returned no One Piece groups")
+    cards = {}
+    for group in groups:
+        time.sleep(.15)
+        for row in results(f"{CATEGORY}/{group}/products"):
+            product = single_metadata(row)
+            if product:
+                cards[product[0]] = product[2]
+    if not cards:
+        raise ValueError("TCGCSV returned no classified One Piece singles")
+    return cards
+
+
+def metadata_current(stamp):
+    try:
+        metadata = json.loads(METADATA.read_text(encoding="utf-8"))
+        engine_hash = hashlib.sha256()
+        for file in ("data.js", "engine.js"):
+            engine_hash.update((ROOT / file).read_text(encoding="utf-8").encode("utf-8"))
+        return (metadata.get("version") == 1 and bool(metadata.get("cards"))
+                and datetime.fromisoformat(metadata["sourceUpdatedAt"]) == stamp
+                and metadata.get("rarityEngineSha256") == engine_hash.hexdigest())
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def export_metadata(cards, stamp):
+    # Canonical badge rules live in engine.js; do not duplicate them in Python.
+    subprocess.run(["node", str(ROOT / "build-card-metadata.cjs"), "--stdin", "--output", str(METADATA)],
+                   input=json.dumps({"sourceUpdatedAt": stamp.isoformat(), "cards": cards}),
+                   text=True, check=True)
 
 
 def write_json(path, data):
@@ -90,6 +142,16 @@ def sync():
     if status_path.exists():
         previous = datetime.fromisoformat(json.loads(status_path.read_text(encoding="utf-8"))["sourceUpdatedAt"])
         if previous >= stamp:
+            if previous > stamp:
+                if not metadata_current(previous):
+                    raise RuntimeError("The catalog feed is older than saved prices; cannot refresh matching rarity metadata yet.")
+                print(f"Already saved the newer {previous.isoformat()} feed")
+                return
+            if not metadata_current(stamp):
+                metadata = collect_metadata()
+                if feed_timestamp() != stamp:
+                    raise RuntimeError("TCGCSV changed builds during metadata collection. Retry the sync.")
+                export_metadata(metadata, stamp)
             print(f"Already saved the {previous.isoformat()} feed")
             return
 
@@ -97,9 +159,10 @@ def sync():
     # Check the existing archive before making the group requests.
     paths = [HISTORY / f"{bucket}.json" for bucket in range(BUCKETS)]
     archive = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
-    quotes, singles = collect_quotes()
+    quotes, singles, metadata = collect_quotes()
     if feed_timestamp() != stamp:
         raise RuntimeError("TCGCSV changed builds during collection. Retry the sync.")
+    export_metadata(metadata, stamp)
 
     # The existing archive stores newest first. Also remove any same-day
     # entries from a manual backfill or from an interrupted earlier write.

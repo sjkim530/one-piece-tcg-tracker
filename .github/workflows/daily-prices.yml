@@ -57,7 +57,7 @@ jobs:
           if [ "${{ github.event_name }}" != push ]; then python3 sync_prices.py; fi
           mkdir _site
           node track-market-signals.cjs _site/signal-performance.json
-          git add price-history/ signal-ledger/
+          git add price-history/ signal-ledger/ card-metadata.json
           if ! git diff --cached --quiet; then
             git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Update One Piece price history'
             git push
@@ -65,6 +65,9 @@ jobs:
       - name: Stage the public app
         run: |
           for file in app.js backup.js card-scan.js scan-vision.js scan-vision-worker.js collection.js data.js engine.js source.js market-analysis.js price-history.js sw.js; do node --check "$file" || exit 1; done
+          node tests-market.cjs
+          node tests-card-metadata.cjs
+          python3 tests-sync-metadata.py
           node tests-cache.cjs
           node tests-backup.cjs
           node tests-feedback.cjs

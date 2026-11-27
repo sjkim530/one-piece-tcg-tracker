@@ -6,7 +6,7 @@
 (function (D, E, C) {
   'use strict';
 
-  const APP_VERSION = '3.9.1';
+  const APP_VERSION = '3.10.0';
 
   const $  = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
@@ -1398,7 +1398,7 @@
       request.result = fetch('./market-summary.json', { cache: 'no-cache' }).then(async response => {
         if (!response.ok) throw new Error('Market summary unavailable');
         const summary = await response.json();
-        if (summary.version !== OQ_MARKET.summaryVersion || !Number.isSafeInteger(summary.day) || !summary.rows ||
+        if (summary.version !== OQ_MARKET.summaryVersion || summary.strategy !== OQ_MARKET.strategy || !Number.isSafeInteger(summary.day) || !summary.rows ||
             Math.floor(Date.parse(summary.sourceUpdatedAt) / 86400000) !== summary.day) {
           throw new Error('Invalid market summary');
         }
@@ -1734,8 +1734,9 @@
         const savedSummary = summary && entry.printing != null
           ? summaryRow(summary, entry.card, entry.printing) : null;
         const latest = savedSummary?.latest || points.at(-1);
-        const analysis = savedSummary && latest[0] >= run.today - 3 && latest[0] <= run.today
-          ? savedSummary.analysis : OQ_MARKET.analyze(latest ? (summary ? [latest] : points) : [], run.today);
+        const effectiveRarity = E.rarityBadge(entry.card).text;
+        const analysis = savedSummary && savedSummary.analysis.rarity === effectiveRarity && latest[0] >= run.today - 3 && latest[0] <= run.today
+          ? savedSummary.analysis : OQ_MARKET.analyze(latest ? (summary ? [latest] : points) : [], run.today, effectiveRarity);
         return {
           ...entry, analysis, latest,
           search: searchWords([entry.card.card_name, entry.card.card_set_id, entry.rarity].join(' ')),
@@ -1769,17 +1770,18 @@
       const response = await fetch('./signal-performance.json', { cache: 'no-cache' });
       if (!response.ok) throw new Error('Report unavailable');
       const report = await response.json();
-      if (report.version !== 1 || !Array.isArray(report.results)) throw new Error('Unknown report format');
+      if (report.version !== 2 || report.strategy !== OQ_MARKET.strategy || !Array.isArray(report.results)) throw new Error('Unknown report format');
       if (scannerRun !== run) return;
       if (!report.trackedDays) {
-        host.textContent = 'Forward tracking starts with the first daily job that observes a new price snapshot.';
+        host.textContent = 'Forward tracking for the current rarity-based sale rule starts with the next daily snapshot. Earlier flags used the previous $10 sale minimum and are excluded.';
         return;
       }
       const pct = value => value == null ? '—' : E.pct(value, 1);
       const stamp = Math.floor(Date.parse(report.sourceUpdatedAt) / 86400000);
-      host.innerHTML = `<p>Tracking since ${esc(OQ_HISTORY.dateLabel(report.start))} ·
+      host.innerHTML = `<p>Current rarity-based sale rule · Tracking since ${esc(OQ_HISTORY.dateLabel(report.start))} ·
         ${Number(report.trackedDays)} of ${stamp - Number(report.start) + 1} UTC dates recorded ·
-        Report through ${esc(OQ_HISTORY.dateLabel(stamp))}</p>` +
+        Report through ${esc(OQ_HISTORY.dateLabel(stamp))}.
+        ${Number(report.legacyDays) || 0} earlier-rule dates excluded.</p>` +
         report.results.map(row => `<div class="signal-performance-row">
           <strong>${esc(signalLabels[row.call])} · ${Number(row.horizon)} days</strong>
           <p>${Number(row.total)} flags · ${Number(row.pending)} pending · ${Number(row.missing)} without an exact forward quote</p>
@@ -1789,12 +1791,15 @@
             ${row.netCount ? `Median modeled ${row.call === 'Buy Now' ? 'resale return' : 'change in net proceeds from waiting'} ${pct(row.medianNet)} (${Number(row.netCount)} observations).` : ''}</p>
         </div>`).join('');
     } catch {
-      if (scannerRun === run) host.textContent = 'The forward report is unavailable. It is published by the daily price job.';
+      if (scannerRun === run) host.textContent = 'The current-rule forward report is unavailable. The daily price job publishes it separately from results under earlier rules.';
     }
   }
 
   function scannerExplanation(analysis) {
-    const note = `<span class="small muted">${analysis.evidence === 'limited' ? '<strong>Limited evidence.</strong> ' : ''}${esc(analysis.reason)}</span>`;
+    const exclusions = analysis.evidence === 'full' ? [!analysis.buyEligible && analysis.buyReason, !analysis.sellEligible && analysis.sellReason]
+      .filter(reason => reason && !analysis.reason.includes(reason)) : [];
+    const note = `<span class="small muted">${analysis.evidence === 'limited' ? '<strong>Limited evidence.</strong> ' : ''}${esc(analysis.reason)}</span>` +
+      exclusions.map(reason => `<span class="small muted">${esc(reason)}</span>`).join('');
     if (!analysis.eligible || analysis.call !== 'Hold') return note;
     const money = cents => E.money(cents / 100, 2);
     const listRange = rule => `${money(rule.minListing)}–${money(rule.maxListing)} at this Market Price`;
@@ -1802,7 +1807,7 @@
       { name: signalLabels['Buy Now'], rule: analysis.buy, limit: 'or less', trend: '+5% or higher' },
       { name: signalLabels['Sell Now'], rule: analysis.sell, limit: 'or more', trend: '−5% or lower' }
     ];
-    const nearest = directions.find(({ rule }) => [rule.priceMet, rule.trendMet, rule.listingMet].filter(Boolean).length === 2);
+    const nearest = directions.find(({ rule }) => rule.eligible && [rule.priceMet, rule.trendMet, rule.listingMet].filter(Boolean).length === 2);
     if (!nearest) return note;
     const { name, rule, limit, trend } = nearest;
     const needs = [];
@@ -2269,7 +2274,7 @@
     const coverage = $('#col-history-coverage');
     coverage.textContent = '';
     const pending = Promise.resolve(S.historyWrite).then(() => OQ_HISTORY.scan([...holdings.values()], (row, points) => ({
-      ...row, points, signal: OQ_MARKET.analyze(points, day)
+      ...row, points, signal: OQ_MARKET.analyze(points, day, E.rarityBadge(row.card).text)
     }), () => {})).then(result => {
       const history = C.holdingHistory(result.rows);
       if (collectionHistoryRun === run) {
@@ -3572,7 +3577,8 @@
   function renderCardMarket({ printing, points }) {
     const host = $('#catalog-market');
     const today = Math.floor(Date.now() / 86400000);
-    const call = OQ_MARKET.analyze(points, today);
+    const card = S.byKey[catalogCardKey];
+    const call = OQ_MARKET.analyze(points, today, card ? E.rarityBadge(card).text : null);
     const money = cents => E.money(cents / 100, 2);
     const last = points.at(-1);
     const date = last ? OQ_HISTORY.dateLabel(last[0]) : '';
@@ -3596,12 +3602,12 @@
           <div><dt>Typical 90-day range</dt><dd>${range(call.recentRange)}</dd></div>
           <div><dt>Typical one-year range</dt><dd>${range(call.year)}</dd></div>` : ''}
         </dl>` : ''}
-      ${call.eligible ? `
+      ${call.evidence === 'full' ? `
         <details class="small market-rules">
           <summary>What would change the call?</summary>
-          <p>Buy at a Market Price of ${money(call.buy.price)} or less with momentum of +5% or higher. The qualifying listing range is ${range([call.buy.minListing, call.buy.maxListing])} at the latest Market Price.</p>
-          <p>Sell at a Market Price of ${money(call.sell.price)} or more with momentum of −5% or lower. The qualifying listing range is ${range([call.sell.minListing, call.sell.maxListing])} at the latest Market Price.</p>
-          <p class="muted">Calls require a market price of at least $10 and distinct buy and sell thresholds. The ranges show the 10th–90th percentiles of observed prices. Momentum compares two seven-day medians about a month apart. Buy calls flag potential collection purchases. Sale volume and time to sell are unavailable.</p>
+          <p><strong>Buy:</strong> ${esc(call.buyReason)} ${call.buyEligible ? `Buy at a Market Price of ${money(call.buy.price)} or less with momentum of +5% or higher. The qualifying listing range is ${range([call.buy.minListing, call.buy.maxListing])} at the latest Market Price.` : ''}</p>
+          <p><strong>Sell:</strong> ${esc(call.sellReason)} ${call.sellEligible ? `Review at a Market Price of ${money(call.sell.price)} or more with momentum of −5% or lower. The qualifying listing range is ${range([call.sell.minListing, call.sell.maxListing])} at the latest Market Price.` : ''}</p>
+          <p class="muted">Buy candidates require $10 or more. Sale reviews exclude C and UC; R requires $1 or more; other known printed rarities qualify at any positive price. Alternate-art stars do not change C, UC, or R eligibility. Both directions still require distinct thresholds and the existing history, trend, and listing checks. The ranges show the 10th–90th percentiles of observed prices. Momentum compares two seven-day medians about a month apart. Sale volume and time to sell are unavailable.</p>
         </details>` : ''}
       ${last ? `
         <details class="small market-rules"${call.call === 'Sell Now' ? ' open' : ''}>
@@ -3613,7 +3619,7 @@
           <p>Estimated net <strong data-net aria-live="polite"></strong></p>
           <p class="muted">One US Marketplace Level 1–4 sale with seller-paid shipping, before buyer tax. <a href="https://help.tcgplayer.com/hc/en-us/articles/201357836-TCGplayer-Fees" target="_blank" rel="noopener noreferrer">TCGplayer fee schedule</a></p>
         </details>` : ''}
-      <p class="small muted">Experimental flags use TCGplayer price snapshots. Sales volume, condition-specific quotes, and time to sell are unavailable in this feed. <a href="MARKET-BACKTEST.md" target="_blank" rel="noopener noreferrer">Backtest results</a></p>`;
+      <p class="small muted">Experimental flags use TCGplayer price snapshots. A sale review is a timing flag; estimate fees and shipping separately. Sales volume, condition-specific quotes, and time to sell are unavailable. <a href="MARKET-BACKTEST.md" target="_blank" rel="noopener noreferrer">Earlier-rule backtest</a> used the previous $10 sale minimum and does not validate the current rarity-based rule.</p>`;
     if (!last) return;
     const sale = host.querySelector('[data-sale]');
     const shipping = host.querySelector('[data-shipping]');
